@@ -282,19 +282,21 @@
                 const topicHash = md5(token || 'safedoor_default_topic_hash_key_1029');
                 const ntfyTopic = `safedoor_bell_${topicHash}`;
                 
-                await fetch(`https://ntfy.sh/${ntfyTopic}`, {
+                // Using CORS-safe query parameters instead of custom headers to avoid OPTIONS preflight block
+                const queryParams = new URLSearchParams({
+                    title: '🔔 SafeDoor Gatekeeper Alert!',
+                    priority: 'high',
+                    tags: 'bell,door'
+                });
+                
+                await fetch(`https://ntfy.sh/${ntfyTopic}?${queryParams.toString()}`, {
                     method: 'POST',
                     body: JSON.stringify({
                         visitorName: visitorName,
                         purpose: selectedPurpose,
                         message: message,
                         timestamp: Date.now()
-                    }),
-                    headers: {
-                        'Title': '🔔 SafeDoor Gatekeeper Alert!',
-                        'Priority': 'high',
-                        'Tags': 'bell,door'
-                    }
+                    })
                 });
             } catch (e) {
                 console.error("Optional remote bridge error", e);
@@ -302,7 +304,7 @@
 
             // Redirect user to the deep link so that if the Android app is running or installed,
             // it will capture the intent and automatically register the visitor!
-            const targetUrl = `${window.location.origin}${window.location.pathname}?token=${encodeURIComponent(token)}&registerVisitor=true&visitorName=${encodeURIComponent(visitorName)}&purpose=${encodeURIComponent(selectedPurpose)}&message=${encodeURIComponent(message)}`;
+            const targetUrl = `${window.location.origin}${window.location.pathname}?token=${encodeURIComponent(token)}&registerVisitor=true&visitorName=${encodeURIComponent(visitorName)}&purpose=${encodeURIComponent(selectedPurpose)}&message=${encodeURIComponent(message)}&timestamp=${Date.now()}`;
             
             // Redirect or show success
             window.location.href = targetUrl;
