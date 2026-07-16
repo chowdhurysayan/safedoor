@@ -65,6 +65,24 @@
                         <i class="fa-solid fa-arrow-rotate-left mr-1.5"></i> Ring Again
                     </button>
                 </div>
+
+                <!-- Live Chat Section (Only visible once resident initiates it) -->
+                <div id="chatSection" class="hidden border-t border-slate-100 pt-6 mt-6 text-left space-y-4">
+                    <div class="flex items-center gap-2">
+                        <span class="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
+                        <h3 class="text-sm font-bold text-slate-900">Live Chat with Resident</h3>
+                    </div>
+                    <div id="chatHistory" class="space-y-3 max-h-48 overflow-y-auto p-1 text-xs flex flex-col gap-2">
+                        <!-- Message items go here -->
+                    </div>
+                    <form id="chatForm" onsubmit="sendChatMessage(event)" class="flex gap-2">
+                        <input type="text" id="chatInput" placeholder="Type your reply..." required
+                            class="flex-grow px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none text-xs font-medium text-slate-800">
+                        <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 transition">
+                            Send
+                        </button>
+                    </form>
+                </div>
             </div>
 
             <!-- Form / Input State -->
@@ -183,12 +201,20 @@
 
             // Check if we are already in success state
             if (registerVisitor === 'true' && queryVisitorName) {
+                const currentTimestamp = parseInt(urlParams.get('timestamp')) || Date.now();
                 showSuccess(queryVisitorName, queryPurpose, queryMessage);
+                startChatListener(md5(token || 'safedoor_default_topic_hash_key_1029'), currentTimestamp);
             }
 
             // Attempt basic decoding of token metadata if available
             try {
-                if (token) {
+                const queryOwnerName = urlParams.get('ownerName');
+                const queryDoorId = urlParams.get('doorId');
+
+                if (queryOwnerName || queryDoorId) {
+                    if (queryDoorId) document.getElementById('doorIdLabel').innerText = queryDoorId;
+                    if (queryOwnerName) document.getElementById('ownerNameLabel').innerText = queryOwnerName;
+                } else if (token) {
                     // Quick Base64 decode to find readable strings if possible (fallback)
                     let decodedToken = '';
                     try {
@@ -276,6 +302,9 @@
             submitBtn.disabled = true;
             submitBtn.innerHTML = '<i class="fa-solid fa-spinner animate-spin mr-2"></i> Registering...';
 
+            // Calculate current timestamp ONCE so both NTFY registration payload and redirect URL have the exact same timestamp!
+            const now = Date.now();
+
             try {
                 // Send remote notification via NTFY.sh to bridge cross-device communication to the Android app!
                 // We create a unique topic based on the token/door credentials so the Android app can listen to it.
@@ -295,7 +324,7 @@
                         visitorName: visitorName,
                         purpose: selectedPurpose,
                         message: message,
-                        timestamp: Date.now()
+                        timestamp: now
                     })
                 });
             } catch (e) {
@@ -304,7 +333,7 @@
 
             // Redirect user to the deep link so that if the Android app is running or installed,
             // it will capture the intent and automatically register the visitor!
-            const targetUrl = `${window.location.origin}${window.location.pathname}?token=${encodeURIComponent(token)}&registerVisitor=true&visitorName=${encodeURIComponent(visitorName)}&purpose=${encodeURIComponent(selectedPurpose)}&message=${encodeURIComponent(message)}&timestamp=${Date.now()}`;
+            const targetUrl = `${window.location.origin}${window.location.pathname}?token=${encodeURIComponent(token)}&registerVisitor=true&visitorName=${encodeURIComponent(visitorName)}&purpose=${encodeURIComponent(selectedPurpose)}&message=${encodeURIComponent(message)}&timestamp=${now}`;
             
             // Redirect or show success
             window.location.href = targetUrl;
@@ -325,6 +354,119 @@
             // Clear query params and reload
             const cleanUrl = `${window.location.origin}${window.location.pathname}?token=${encodeURIComponent(token)}`;
             window.location.href = cleanUrl;
+        }
+
+        let chatInitialized = false;
+        let eventSource = null;
+        let visitorTimestamp = 0;
+
+        function startChatListener(topicHash, currentVisitorTimestamp) {
+            visitorTimestamp = currentVisitorTimestamp;
+            const ntfyTopic = `safedoor_bell_${topicHash}`;
+
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            console.log("Subscribing to live chat on SSE: " + ntfyTopic);
+            eventSource = new EventSource(`https://ntfy.sh/${ntfyTopic}/sse`);
+            
+            eventSource.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.event === "message") {
+                        const payload = JSON.parse(data.message);
+                        const msgVisitorTs = Number(payload.visitorTimestamp);
+                        const currentVisitorTs = Number(visitorTimestamp);
+                        if (payload.type === "chat_message" && (msgVisitorTs === currentVisitorTs || Math.abs(msgVisitorTs - currentVisitorTs) < 3000)) {
+                            // Ensure chat section is shown!
+                            const chatSection = document.getElementById('chatSection');
+                            if (chatSection) {
+                                chatSection.classList.remove('hidden');
+                            }
+                            chatInitialized = true;
+                            
+                            // Append message to history
+                            appendMessageToHistory(payload.sender, payload.message, payload.timestamp);
+                        }
+                    }
+                } catch (e) {
+                    console.error("Error processing SSE message", e);
+                }
+            };
+
+            eventSource.onerror = (e) => {
+                console.error("SSE connection error, retrying...", e);
+            };
+        }
+
+        const messageTimestamps = new Set();
+
+        function appendMessageToHistory(sender, message, timestamp) {
+            const uniqueKey = `${sender}_${timestamp}_${message}`;
+            if (messageTimestamps.has(uniqueKey)) return; // Prevent duplicate displays
+            messageTimestamps.add(uniqueKey);
+
+            const chatHistory = document.getElementById('chatHistory');
+            if (!chatHistory) return;
+
+            const isOwner = sender === "Owner";
+            const displayName = isOwner ? (urlParams.get('ownerName') || "Resident") : "You";
+            
+            const msgBubble = document.createElement('div');
+            msgBubble.className = `flex flex-col ${isOwner ? 'items-start' : 'items-end'} space-y-1`;
+            
+            msgBubble.innerHTML = `
+                <span class="text-[10px] text-slate-400 font-bold px-1">${displayName}</span>
+                <div class="max-w-[85%] px-3 py-2 rounded-2xl text-xs font-medium ${
+                    isOwner 
+                    ? 'bg-slate-100 text-slate-800 rounded-tl-none' 
+                    : 'bg-indigo-600 text-white rounded-tr-none'
+                }">
+                    ${escapeHtml(message)}
+                </div>
+            `;
+            chatHistory.appendChild(msgBubble);
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+        }
+
+        async function sendChatMessage(event) {
+            event.preventDefault();
+            const input = document.getElementById('chatInput');
+            if (!input) return;
+            const messageText = input.value.trim();
+            if (!messageText) return;
+
+            input.value = '';
+            
+            // Add message locally first for instant feedback!
+            const now = Date.now();
+            appendMessageToHistory("Visitor", messageText, now);
+
+            try {
+                const topicHash = md5(token || 'safedoor_default_topic_hash_key_1029');
+                const ntfyTopic = `safedoor_bell_${topicHash}`;
+
+                const payload = {
+                    type: "chat_message",
+                    sender: "Visitor",
+                    visitorTimestamp: visitorTimestamp,
+                    message: messageText,
+                    timestamp: now
+                };
+
+                await fetch(`https://ntfy.sh/${ntfyTopic}`, {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                });
+                console.log("Chat message sent to ntfy:", payload);
+            } catch (e) {
+                console.error("Error sending chat message:", e);
+            }
         }
 
         // Extremely simple md5 implementation for unique ntfy topic hashing
