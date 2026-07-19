@@ -68,12 +68,27 @@
 
                 <!-- Live Chat Section (Only visible once resident initiates it) -->
                 <div id="chatSection" class="hidden border-t border-slate-100 pt-6 mt-6 text-left space-y-4">
-                    <div class="flex items-center gap-2">
-                        <span class="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
-                        <h3 class="text-sm font-bold text-slate-900">Live Chat with Resident</h3>
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <span class="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
+                            <h3 class="text-sm font-bold text-slate-900">Live Chat with Resident</h3>
+                        </div>
+                        <button type="button" id="startCallBtn" onclick="startWebCall()" class="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded-lg border border-emerald-200 text-[10px] transition duration-150 flex items-center gap-1">
+                            <i class="fa-solid fa-phone-flip text-emerald-500"></i>
+                            <span>Web Call</span>
+                        </button>
                     </div>
                     <div id="chatHistory" class="space-y-3 max-h-48 overflow-y-auto p-1 text-xs flex flex-col gap-2">
                         <!-- Message items go here -->
+                    </div>
+                    <!-- Typing Indicator -->
+                    <div id="typingIndicator" class="hidden flex items-center gap-2 pl-1 pb-1">
+                        <div class="flex space-x-1 items-center">
+                            <span class="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style="animation-delay: 0ms"></span>
+                            <span class="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style="animation-delay: 150ms"></span>
+                            <span class="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style="animation-delay: 300ms"></span>
+                        </div>
+                        <span class="text-[10px] text-slate-400 font-semibold italic" id="typingLabel">Resident is typing...</span>
                     </div>
                     <form id="chatForm" onsubmit="sendChatMessage(event)" class="flex gap-2">
                         <input type="text" id="chatInput" placeholder="Type your reply..." required
@@ -166,6 +181,29 @@
                             class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition duration-200 text-sm text-slate-800"></textarea>
                     </div>
 
+                    <!-- Optional Photo Capture -->
+                    <div class="space-y-2">
+                        <label class="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                            <i class="fa-solid fa-camera text-slate-400"></i>
+                            <span>Optional Photo (Parcel or Self)</span>
+                        </label>
+                        <div class="flex items-center gap-3">
+                            <label class="flex items-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl cursor-pointer transition duration-200 border border-slate-200 text-xs font-bold shadow-sm">
+                                <i class="fa-solid fa-camera text-indigo-500"></i>
+                                <span>Capture Photo</span>
+                                <input type="file" id="photoCapture" accept="image/*" capture="environment" class="hidden" onchange="previewCapturedPhoto(event)">
+                            </label>
+                            <span id="photoFileName" class="text-[11px] text-slate-400 font-medium italic truncate max-w-[180px]">No photo captured</span>
+                            <button type="button" id="clearPhotoBtn" class="hidden text-red-500 text-xs font-bold hover:text-red-700" onclick="clearCapturedPhoto()">
+                                Clear
+                            </button>
+                        </div>
+                        <!-- Image Preview Box -->
+                        <div id="photoPreviewContainer" class="hidden mt-2 relative inline-block">
+                            <img id="photoPreview" class="w-24 h-24 object-cover rounded-xl border border-slate-200 shadow-sm" src="">
+                        </div>
+                    </div>
+
                     <!-- Submit Button -->
                     <button type="submit" id="submitBtn" class="w-full bg-indigo-600 text-white font-bold py-3.5 rounded-xl hover:bg-indigo-700 focus:ring-4 focus:ring-indigo-100 transition duration-200 flex items-center justify-center gap-2 text-sm shadow-lg shadow-indigo-100">
                         <i class="fa-solid fa-bell"></i>
@@ -243,7 +281,83 @@
                 document.getElementById('doorIdLabel').innerText = "Doorbell Portal";
                 document.getElementById('ownerNameLabel').innerText = "Verified Resident";
             }
+
+            // Keyboard-friendly inputs scrolling
+            const inputElements = document.querySelectorAll('input[type="text"], textarea');
+            inputElements.forEach(input => {
+                input.addEventListener('focus', function() {
+                    setTimeout(() => {
+                        this.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }, 350); // Small delay to let virtual keyboard pop up and adjust viewport
+                });
+            });
         });
+
+        let capturedPhotoBase64 = null;
+
+        function previewCapturedPhoto(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    // Compress to max 200px dimension and 0.5 quality to keep under ~4KB
+                    const maxDim = 200;
+                    let width = img.width;
+                    let height = img.height;
+                    if (width > height) {
+                        if (width > maxDim) {
+                            height = Math.round(height * maxDim / width);
+                            width = maxDim;
+                        }
+                    } else {
+                        if (height > maxDim) {
+                            width = Math.round(width * maxDim / height);
+                            height = maxDim;
+                        }
+                    }
+
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    capturedPhotoBase64 = canvas.toDataURL('image/jpeg', 0.5);
+
+                    // Update UI previews
+                    const previewContainer = document.getElementById('photoPreviewContainer');
+                    const previewImg = document.getElementById('photoPreview');
+                    const fileNameSpan = document.getElementById('photoFileName');
+                    const clearBtn = document.getElementById('clearPhotoBtn');
+
+                    if (previewImg) previewImg.src = capturedPhotoBase64;
+                    if (previewContainer) previewContainer.classList.remove('hidden');
+                    if (fileNameSpan) fileNameSpan.innerText = file.name;
+                    if (clearBtn) clearBtn.classList.remove('hidden');
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function clearCapturedPhoto() {
+            capturedPhotoBase64 = null;
+            const inputEl = document.getElementById('photoCapture');
+            if (inputEl) inputEl.value = '';
+            
+            const previewContainer = document.getElementById('photoPreviewContainer');
+            const previewImg = document.getElementById('photoPreview');
+            const fileNameSpan = document.getElementById('photoFileName');
+            const clearBtn = document.getElementById('clearPhotoBtn');
+
+            if (previewContainer) previewContainer.classList.add('hidden');
+            if (previewImg) previewImg.src = '';
+            if (fileNameSpan) fileNameSpan.innerText = 'No photo captured';
+            if (clearBtn) clearBtn.classList.add('hidden');
+        }
 
         // Toggle selected purpose button
         function selectPurpose(purpose, defaultName) {
@@ -324,7 +438,8 @@
                         visitorName: visitorName,
                         purpose: selectedPurpose,
                         message: message,
-                        timestamp: now
+                        timestamp: now,
+                        visitorPhoto: capturedPhotoBase64 || ''
                     })
                 });
             } catch (e) {
@@ -333,7 +448,7 @@
 
             // Redirect user to the deep link so that if the Android app is running or installed,
             // it will capture the intent and automatically register the visitor!
-            const targetUrl = `${window.location.origin}${window.location.pathname}?token=${encodeURIComponent(token)}&registerVisitor=true&visitorName=${encodeURIComponent(visitorName)}&purpose=${encodeURIComponent(selectedPurpose)}&message=${encodeURIComponent(message)}&timestamp=${now}`;
+            const targetUrl = `${window.location.origin}${window.location.pathname}?token=${encodeURIComponent(token)}&registerVisitor=true&visitorName=${encodeURIComponent(visitorName)}&purpose=${encodeURIComponent(selectedPurpose)}&message=${encodeURIComponent(message)}&timestamp=${now}&visitorPhoto=${encodeURIComponent(capturedPhotoBase64 || '')}`;
             
             // Redirect or show success
             window.location.href = targetUrl;
@@ -386,8 +501,15 @@
                             }
                             chatInitialized = true;
                             
+                            // Hide typing indicator immediately when a real message arrives
+                            showTypingIndicator(false);
+
                             // Append message to history
                             appendMessageToHistory(payload.sender, payload.message, payload.timestamp);
+                        } else if (payload.type === "typing" && (msgVisitorTs === currentVisitorTs || Math.abs(msgVisitorTs - currentVisitorTs) < 3000)) {
+                            if (payload.sender === "Owner") {
+                                showTypingIndicator(payload.isTyping);
+                            }
                         }
                     }
                 } catch (e) {
@@ -398,6 +520,39 @@
             eventSource.onerror = (e) => {
                 console.error("SSE connection error, retrying...", e);
             };
+        }
+
+        let typingTimeout = null;
+
+        function showTypingIndicator(isTyping) {
+            const indicator = document.getElementById('typingIndicator');
+            if (!indicator) return;
+
+            if (isTyping) {
+                indicator.classList.remove('hidden');
+                
+                // Set the resident's actual name if available
+                const ownerName = urlParams.get('ownerName') || "Resident";
+                const typingLabel = document.getElementById('typingLabel');
+                if (typingLabel) {
+                    typingLabel.innerText = `${ownerName} is typing...`;
+                }
+
+                // Auto-scroll chat page if near bottom
+                const chatHistory = document.getElementById('chatHistory');
+                if (chatHistory) {
+                    chatHistory.scrollTop = chatHistory.scrollHeight;
+                }
+
+                // Hide typing indicator after 4 seconds of inactivity as a fallback
+                if (typingTimeout) clearTimeout(typingTimeout);
+                typingTimeout = setTimeout(() => {
+                    indicator.classList.add('hidden');
+                }, 4000);
+            } else {
+                indicator.classList.add('hidden');
+                if (typingTimeout) clearTimeout(typingTimeout);
+            }
         }
 
         const messageTimestamps = new Set();
@@ -416,6 +571,23 @@
             const msgBubble = document.createElement('div');
             msgBubble.className = `flex flex-col ${isOwner ? 'items-start' : 'items-end'} space-y-1`;
             
+            let messageContentHtml = "";
+            if (message.startsWith("📞 [Web Call Started]")) {
+                const topicHash = md5(token || 'safedoor_default_topic_hash_key_1029');
+                const callUrl = `https://meet.jit.si/gatekeeper_call_${topicHash}`;
+                messageContentHtml = `
+                    <div class="flex flex-col items-center gap-2 p-1 text-center">
+                        <span class="font-bold flex items-center gap-1.5"><i class="fa-solid fa-phone-flip text-emerald-400"></i> Web Voice/Video Call</span>
+                        <span class="text-[10px] text-slate-400">Doorbell webcall is active. Join below.</span>
+                        <a href="${callUrl}" target="_blank" class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 text-white font-bold rounded-lg transition duration-150 shadow-sm text-[11px] no-underline">
+                            <i class="fa-solid fa-video"></i> Join Call
+                        </a>
+                    </div>
+                `;
+            } else {
+                messageContentHtml = escapeHtml(message);
+            }
+
             msgBubble.innerHTML = `
                 <span class="text-[10px] text-slate-400 font-bold px-1">${displayName}</span>
                 <div class="max-w-[85%] px-3 py-2 rounded-2xl text-xs font-medium ${
@@ -423,7 +595,7 @@
                     ? 'bg-slate-100 text-slate-800 rounded-tl-none' 
                     : 'bg-indigo-600 text-white rounded-tr-none'
                 }">
-                    ${escapeHtml(message)}
+                    ${messageContentHtml}
                 </div>
             `;
             chatHistory.appendChild(msgBubble);
@@ -466,6 +638,37 @@
                 console.log("Chat message sent to ntfy:", payload);
             } catch (e) {
                 console.error("Error sending chat message:", e);
+            }
+        }
+
+        async function startWebCall() {
+            const messageText = "📞 [Web Call Started] Click here to join the call.";
+            const now = Date.now();
+            
+            appendMessageToHistory("Visitor", messageText, now);
+
+            try {
+                const topicHash = md5(token || 'safedoor_default_topic_hash_key_1029');
+                const ntfyTopic = `safedoor_bell_${topicHash}`;
+
+                const payload = {
+                    type: "chat_message",
+                    sender: "Visitor",
+                    visitorTimestamp: visitorTimestamp,
+                    message: messageText,
+                    timestamp: now
+                };
+
+                await fetch(`https://ntfy.sh/${ntfyTopic}`, {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                });
+                console.log("Web Call message sent to ntfy:", payload);
+                
+                const callUrl = `https://meet.jit.si/gatekeeper_call_${topicHash}`;
+                window.open(callUrl, '_blank');
+            } catch (e) {
+                console.error("Error starting web call:", e);
             }
         }
 
