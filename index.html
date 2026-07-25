@@ -494,6 +494,11 @@
                         const msgVisitorTs = Number(payload.visitorTimestamp);
                         const currentVisitorTs = Number(visitorTimestamp);
                         if (payload.type === "chat_message" && (msgVisitorTs === currentVisitorTs || Math.abs(msgVisitorTs - currentVisitorTs) < 3000)) {
+                            if (payload.message && payload.message.startsWith("_webrtc_call_:")) {
+                                handleIncomingCallSignal(payload.message, payload.sender);
+                                return;
+                            }
+
                             // Ensure chat section is shown!
                             const chatSection = document.getElementById('chatSection');
                             if (chatSection) {
@@ -574,7 +579,7 @@
             let messageContentHtml = "";
             if (message.startsWith("📞 [Web Call Started]")) {
                 const topicHash = md5(token || 'safedoor_default_topic_hash_key_1029');
-                const callUrl = `https://meet.jit.si/gatekeeper_call_${topicHash}`;
+                const callUrl = `https://meet.ffmuc.net/gatekeeper_call_${topicHash}#config.prejoinPageEnabled=false&userInfo.displayName=${encodeURIComponent(displayName)}`;
                 messageContentHtml = `
                     <div class="flex flex-col items-center gap-2 p-1 text-center">
                         <span class="font-bold flex items-center gap-1.5"><i class="fa-solid fa-phone-flip text-emerald-400"></i> Web Voice/Video Call</span>
@@ -642,33 +647,14 @@
         }
 
         async function startWebCall() {
-            const messageText = "📞 [Web Call Started] Click here to join the call.";
-            const now = Date.now();
-            
-            appendMessageToHistory("Visitor", messageText, now);
-
             try {
-                const topicHash = md5(token || 'safedoor_default_topic_hash_key_1029');
-                const ntfyTopic = `safedoor_bell_${topicHash}`;
-
-                const payload = {
-                    type: "chat_message",
-                    sender: "Visitor",
-                    visitorTimestamp: visitorTimestamp,
-                    message: messageText,
-                    timestamp: now
-                };
-
-                await fetch(`https://ntfy.sh/${ntfyTopic}`, {
-                    method: 'POST',
-                    body: JSON.stringify(payload)
-                });
-                console.log("Web Call message sent to ntfy:", payload);
-                
-                const callUrl = `https://meet.jit.si/gatekeeper_call_${topicHash}`;
-                window.open(callUrl, '_blank');
+                if (typeof initiateWebRtcCall === 'function') {
+                    await initiateWebRtcCall();
+                } else {
+                    console.error("initiateWebRtcCall function not found!");
+                }
             } catch (e) {
-                console.error("Error starting web call:", e);
+                console.error("Error initiating native WebRTC call:", e);
             }
         }
 
@@ -799,6 +785,399 @@
             }
             var temp = WordToHex(a)+WordToHex(b)+WordToHex(c)+WordToHex(d);
             return temp.toLowerCase();
+        }
+    </script>
+
+    <!-- Native-feeling Audio Call Overlay -->
+    <div id="callOverlay" class="hidden fixed inset-0 bg-slate-950/95 backdrop-blur-md z-50 flex flex-col items-center justify-between text-white p-8">
+        <div class="text-center mt-12">
+            <span class="px-3 py-1 bg-emerald-500/20 text-emerald-300 font-semibold text-[10px] uppercase tracking-wider rounded-full border border-emerald-500/30">SafeDoor Audio Call</span>
+            <h2 class="text-2xl font-bold mt-4 text-slate-100" id="callPeerName">Resident</h2>
+            <p class="text-xs text-slate-400 mt-1.5" id="callStatusText">Calling...</p>
+        </div>
+
+        <!-- Pulse Ring animation for call status -->
+        <div class="flex items-center justify-center relative my-12">
+            <!-- Rotating dots overlay shown while calling/connecting -->
+            <div id="connectingDots" class="absolute w-32 h-32 flex items-center justify-center animate-[spin_3s_linear_infinite] z-0 transition-all duration-300">
+                <div class="absolute top-0 w-2.5 h-2.5 bg-emerald-400 rounded-full shadow-[0_0_8px_rgba(52,211,153,0.8)]"></div>
+                <div class="absolute right-0 w-2.5 h-2.5 bg-emerald-400/70 rounded-full"></div>
+                <div class="absolute bottom-0 w-2.5 h-2.5 bg-emerald-400/40 rounded-full"></div>
+                <div class="absolute left-0 w-2.5 h-2.5 bg-emerald-400/20 rounded-full"></div>
+                <div class="absolute top-2 left-2 w-2 h-2 bg-emerald-400/10 rounded-full"></div>
+                <div class="absolute top-2 right-2 w-2 h-2 bg-emerald-400/90 rounded-full shadow-[0_0_6px_rgba(52,211,153,0.6)]"></div>
+                <div class="absolute bottom-2 left-2 w-2 h-2 bg-emerald-400/30 rounded-full"></div>
+                <div class="absolute bottom-2 right-2 w-2 h-2 bg-emerald-400/50 rounded-full"></div>
+            </div>
+            <div id="pulseRing1" class="w-24 h-24 bg-emerald-600/30 rounded-full animate-ping absolute"></div>
+            <div id="pulseRing2" class="w-24 h-24 bg-emerald-500/20 rounded-full animate-pulse absolute"></div>
+            <div class="w-20 h-20 bg-emerald-600 rounded-full flex items-center justify-center relative z-10 shadow-lg border border-emerald-400/40">
+                <i class="fa-solid fa-phone-volume text-3xl text-white"></i>
+            </div>
+        </div>
+
+        <div class="w-full max-w-xs flex flex-col gap-4 mb-8">
+            <!-- Incoming call action buttons -->
+            <div id="incomingCallActions" class="hidden flex items-center justify-around gap-6">
+                <button onclick="declineWebCall()" class="w-16 h-16 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white rounded-full flex items-center justify-center shadow-md transition duration-150">
+                    <i class="fa-solid fa-phone-slash text-xl"></i>
+                </button>
+                <button onclick="acceptWebCall()" class="w-16 h-16 bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 text-white rounded-full flex items-center justify-center shadow-md transition duration-150 animate-bounce">
+                    <i class="fa-solid fa-phone text-xl"></i>
+                </button>
+            </div>
+
+            <!-- Active call action buttons -->
+            <div id="activeCallActions" class="flex flex-col gap-3">
+                <button id="muteCallBtn" onclick="toggleMuteCall()" class="py-3 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 border border-slate-700/60 font-bold rounded-xl text-xs transition duration-150 flex items-center justify-center gap-2">
+                    <i id="muteIcon" class="fa-solid fa-microphone-slash"></i>
+                    <span id="muteBtnText">Mute Microphone</span>
+                </button>
+                <button onclick="hangupCall()" class="py-3 bg-red-600 hover:bg-red-700 active:bg-red-800 font-bold rounded-xl text-xs transition duration-150 flex items-center justify-center gap-2 shadow-sm">
+                    <i class="fa-solid fa-phone-slash"></i>
+                    <span>End Call</span>
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <audio id="remoteAudio" autoplay></audio>
+
+    <!-- WebRTC audio call javascript -->
+    <script>
+        let localStream = null;
+        let peerConnection = null;
+        let audioCtx = null;
+        let ringInterval = null;
+        let callTimerInterval = null;
+        let callSeconds = 0;
+        let isMuted = false;
+
+        const rtcConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
+
+        function encodeSignal(str) {
+            return btoa(unescape(encodeURIComponent(str)));
+        }
+
+        function decodeSignal(str) {
+            return decodeURIComponent(escape(atob(str)));
+        }
+
+        function playRingtone(isIncoming) {
+            if (audioCtx) return;
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                
+                function playTone() {
+                    if (!audioCtx || audioCtx.state === 'closed') return;
+                    const osc1 = audioCtx.createOscillator();
+                    const osc2 = audioCtx.createOscillator();
+                    const gain = audioCtx.createGain();
+                    
+                    osc1.frequency.value = isIncoming ? 400 : 440;
+                    osc2.frequency.value = isIncoming ? 450 : 480;
+                    
+                    osc1.connect(gain);
+                    osc2.connect(gain);
+                    gain.connect(audioCtx.destination);
+                    
+                    gain.gain.setValueAtTime(0, audioCtx.currentTime);
+                    gain.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + 0.1);
+                    gain.gain.setValueAtTime(0.2, audioCtx.currentTime + 1.2);
+                    gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 1.4);
+                    
+                    osc1.start();
+                    osc2.start();
+                    
+                    setTimeout(() => {
+                        try { osc1.stop(); osc2.stop(); } catch(e){}
+                    }, 1500);
+                }
+                
+                playTone();
+                ringInterval = setInterval(playTone, 3000);
+            } catch (e) {
+                console.error("Web Audio API not supported or blocked", e);
+            }
+        }
+
+        function stopRingtone() {
+            if (ringInterval) {
+                clearInterval(ringInterval);
+                ringInterval = null;
+            }
+            if (audioCtx) {
+                try { audioCtx.close(); } catch(e){}
+                audioCtx = null;
+            }
+        }
+
+        function showCallOverlay(isCaller) {
+            document.getElementById('callOverlay').classList.remove('hidden');
+            document.getElementById('callPeerName').innerText = "Verified Resident";
+            isMuted = false;
+            updateMuteUi();
+            
+            // Show connecting dots and pulsing rings during handshake
+            const connectingDots = document.getElementById('connectingDots');
+            if (connectingDots) {
+                connectingDots.classList.remove('hidden');
+            }
+            const pulseRing1 = document.getElementById('pulseRing1');
+            if (pulseRing1) {
+                pulseRing1.classList.remove('hidden');
+            }
+            const pulseRing2 = document.getElementById('pulseRing2');
+            if (pulseRing2) {
+                pulseRing2.classList.remove('hidden');
+            }
+
+            if (isCaller) {
+                document.getElementById('incomingCallActions').classList.add('hidden');
+                document.getElementById('activeCallActions').classList.remove('hidden');
+                document.getElementById('callStatusText').innerText = "Calling...";
+            } else {
+                document.getElementById('incomingCallActions').classList.remove('hidden');
+                document.getElementById('activeCallActions').classList.add('hidden');
+                document.getElementById('callStatusText').innerText = "Incoming Audio Call...";
+            }
+        }
+
+        function closeCallOverlay() {
+            document.getElementById('callOverlay').classList.add('hidden');
+            stopRingtone();
+            stopCallTimer();
+        }
+
+        function startCallTimer() {
+            stopCallTimer();
+            callSeconds = 0;
+            document.getElementById('callStatusText').innerText = "Connected - 00:00";
+            
+            // Hide connecting dots and pulsing rings once handshake completes & call connects
+            const connectingDots = document.getElementById('connectingDots');
+            if (connectingDots) {
+                connectingDots.classList.add('hidden');
+            }
+            const pulseRing1 = document.getElementById('pulseRing1');
+            if (pulseRing1) {
+                pulseRing1.classList.add('hidden');
+            }
+            const pulseRing2 = document.getElementById('pulseRing2');
+            if (pulseRing2) {
+                pulseRing2.classList.add('hidden');
+            }
+
+            callTimerInterval = setInterval(() => {
+                callSeconds++;
+                const mins = String(Math.floor(callSeconds / 60)).padStart(2, '0');
+                const secs = String(callSeconds % 60).padStart(2, '0');
+                document.getElementById('callStatusText').innerText = `Connected - ${mins}:${secs}`;
+            }, 1000);
+        }
+
+        function stopCallTimer() {
+            if (callTimerInterval) {
+                clearInterval(callTimerInterval);
+                callTimerInterval = null;
+            }
+        }
+
+        async function initWebRtc(isCaller) {
+            console.log("Initializing WebRTC, isCaller =", isCaller);
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                console.log("Microphone acquired.");
+            } catch (e) {
+                alert("Microphone permission is required for Audio Calls! Please enable it in your browser.");
+                hangupCall();
+                return;
+            }
+            
+            peerConnection = new RTCPeerConnection(rtcConfig);
+            
+            localStream.getTracks().forEach(track => {
+                peerConnection.addTrack(track, localStream);
+            });
+            
+            peerConnection.ontrack = (event) => {
+                console.log("Remote stream track received.");
+                const remoteAudio = document.getElementById('remoteAudio');
+                if (remoteAudio) {
+                    remoteAudio.srcObject = event.streams[0];
+                }
+            };
+            
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    sendCallSignal(`ice:${encodeSignal(JSON.stringify(event.candidate))}`);
+                }
+            };
+            
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log("ICE connection state change:", peerConnection.iceConnectionState);
+                if (peerConnection.iceConnectionState === 'connected') {
+                    stopRingtone();
+                    startCallTimer();
+                } else if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'failed') {
+                    cleanupCall();
+                }
+            };
+            
+            if (isCaller) {
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                sendCallSignal(`offer:${encodeSignal(JSON.stringify(offer))}`);
+            }
+        }
+
+        async function sendCallSignal(signalText) {
+            const now = Date.now();
+            try {
+                const topicHash = md5(token || 'safedoor_default_topic_hash_key_1029');
+                const ntfyTopic = `safedoor_bell_${topicHash}`;
+
+                const payload = {
+                    type: "chat_message",
+                    sender: "Visitor",
+                    visitorTimestamp: Number(visitorTimestamp) || 0,
+                    message: `_webrtc_call_:${signalText}`,
+                    timestamp: now
+                };
+
+                await fetch(`https://ntfy.sh/${ntfyTopic}`, {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                });
+                console.log("Visitor sent call signal:", signalText);
+            } catch (e) {
+                console.error("Error sending signaling message from Visitor:", e);
+            }
+        }
+
+        async function handleIncomingCallSignal(message, sender) {
+            if (sender === "Visitor") return; // Skip if we sent it
+            
+            const signalData = message.substring("_webrtc_call_:".length);
+            const parts = signalData.split(":");
+            const command = parts[0];
+            
+            console.log("Visitor received signal:", command);
+            
+            if (command === "initiate") {
+                showCallOverlay(false);
+                playRingtone(true);
+            } else if (command === "accept") {
+                stopRingtone();
+                document.getElementById('callStatusText').innerText = "Connecting...";
+                await initWebRtc(true);
+            } else if (command === "decline") {
+                stopRingtone();
+                alert("Resident declined the call.");
+                closeCallOverlay();
+            } else if (command === "offer") {
+                const sdp = JSON.parse(decodeSignal(parts[1]));
+                await handleOffer(sdp);
+            } else if (command === "answer") {
+                const sdp = JSON.parse(decodeSignal(parts[1]));
+                await handleAnswer(sdp);
+            } else if (command === "ice") {
+                const candidate = JSON.parse(decodeSignal(parts[1]));
+                if (peerConnection) {
+                    peerConnection.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.error("Error adding ICE", e));
+                }
+            } else if (command === "hangup") {
+                cleanupCall();
+            }
+        }
+
+        async function handleOffer(sdp) {
+            stopRingtone();
+            document.getElementById('callStatusText').innerText = "Connecting...";
+            await initWebRtc(false);
+            if (peerConnection) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                sendCallSignal(`answer:${encodeSignal(JSON.stringify(answer))}`);
+            }
+        }
+
+        async function handleAnswer(sdp) {
+            if (peerConnection) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
+            }
+        }
+
+        // Visitor Actions
+        async function initiateWebRtcCall() {
+            showCallOverlay(true);
+            playRingtone(false);
+            sendCallSignal("initiate");
+        }
+
+        async function acceptWebCall() {
+            stopRingtone();
+            document.getElementById('incomingCallActions').classList.add('hidden');
+            document.getElementById('activeCallActions').classList.remove('hidden');
+            document.getElementById('callStatusText').innerText = "Answering...";
+            sendCallSignal("accept");
+        }
+
+        function declineWebCall() {
+            sendCallSignal("decline");
+            cleanupCall();
+        }
+
+        function hangupCall() {
+            sendCallSignal("hangup");
+            cleanupCall();
+        }
+
+        function toggleMuteCall() {
+            if (localStream) {
+                isMuted = !isMuted;
+                localStream.getAudioTracks().forEach(track => {
+                    track.enabled = !isMuted;
+                });
+                updateMuteUi();
+            }
+        }
+
+        function updateMuteUi() {
+            const icon = document.getElementById('muteIcon');
+            const btnText = document.getElementById('muteBtnText');
+            if (isMuted) {
+                icon.className = "fa-solid fa-microphone text-emerald-400";
+                btnText.innerText = "Unmute Microphone";
+            } else {
+                icon.className = "fa-solid fa-microphone-slash";
+                btnText.innerText = "Mute Microphone";
+            }
+        }
+
+        function cleanupCall() {
+            stopRingtone();
+            stopCallTimer();
+            
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            const remoteAudio = document.getElementById('remoteAudio');
+            if (remoteAudio) {
+                remoteAudio.srcObject = null;
+            }
+            closeCallOverlay();
         }
     </script>
 </body>
