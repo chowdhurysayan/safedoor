@@ -137,7 +137,11 @@
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' }
+                { urls: 'stun:stun2.l.google.com:19302' },
+                { urls: 'stun:stun3.l.google.com:19302' },
+                { urls: 'stun:stun4.l.google.com:19302' },
+                { urls: 'stun:global.stun.twilio.com:3478' },
+                { urls: 'stun:stun.services.mozilla.com' }
             ]
         };
 
@@ -582,6 +586,15 @@
                 }
             };
 
+            peerConnection.onconnectionstatechange = () => {
+                console.log("Owner connection state:", peerConnection.connectionState);
+                if (peerConnection.connectionState === 'connected') {
+                    startCallTimer();
+                } else if (peerConnection.connectionState === 'failed') {
+                    cleanup();
+                }
+            };
+
             peerConnection.oniceconnectionstatechange = () => {
                 console.log("Owner ICE connection state:", peerConnection.iceConnectionState);
                 if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
@@ -620,7 +633,9 @@
 
                                 console.log("Owner received signal command:", command);
 
-                                if (command === "accept") {
+                                if (command === "initiate") {
+                                    document.getElementById('callStatus').innerText = "Ringing...";
+                                } else if (command === "accept") {
                                     // Visitor accepted the call
                                     document.getElementById('callStatus').innerText = "Connecting...";
                                     await initWebRtc();

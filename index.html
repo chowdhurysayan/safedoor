@@ -1027,7 +1027,11 @@
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' }
+                { urls: 'stun:stun2.l.google.com:19302' },
+                { urls: 'stun:stun3.l.google.com:19302' },
+                { urls: 'stun:stun4.l.google.com:19302' },
+                { urls: 'stun:global.stun.twilio.com:3478' },
+                { urls: 'stun:stun.services.mozilla.com' }
             ]
         };
 
@@ -1044,34 +1048,32 @@
             try {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
                 
-                function playTone() {
+                function playChime() {
                     if (!audioCtx || audioCtx.state === 'closed') return;
-                    const osc1 = audioCtx.createOscillator();
-                    const osc2 = audioCtx.createOscillator();
-                    const gain = audioCtx.createGain();
+                    const now = audioCtx.currentTime;
+                    const freqs = isIncoming ? [523.25, 659.25, 783.99] : [440, 554.37, 659.25];
                     
-                    osc1.frequency.value = isIncoming ? 400 : 440;
-                    osc2.frequency.value = isIncoming ? 450 : 480;
-                    
-                    osc1.connect(gain);
-                    osc2.connect(gain);
-                    gain.connect(audioCtx.destination);
-                    
-                    gain.gain.setValueAtTime(0, audioCtx.currentTime);
-                    gain.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + 0.1);
-                    gain.gain.setValueAtTime(0.2, audioCtx.currentTime + 1.2);
-                    gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 1.4);
-                    
-                    osc1.start();
-                    osc2.start();
-                    
-                    setTimeout(() => {
-                        try { osc1.stop(); osc2.stop(); } catch(e){}
-                    }, 1500);
+                    freqs.forEach((freq, idx) => {
+                        const osc = audioCtx.createOscillator();
+                        const gain = audioCtx.createGain();
+                        osc.type = 'sine';
+                        osc.frequency.value = freq;
+                        
+                        const startTime = now + idx * 0.22;
+                        gain.gain.setValueAtTime(0, startTime);
+                        gain.gain.linearRampToValueAtTime(0.25, startTime + 0.04);
+                        gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.7);
+                        
+                        osc.connect(gain);
+                        gain.connect(audioCtx.destination);
+                        
+                        osc.start(startTime);
+                        osc.stop(startTime + 0.75);
+                    });
                 }
                 
-                playTone();
-                ringInterval = setInterval(playTone, 3000);
+                playChime();
+                ringInterval = setInterval(playChime, 2400);
             } catch (e) {
                 console.error("Web Audio API not supported or blocked", e);
             }
@@ -1420,6 +1422,7 @@
         async function initiateWebRtcCall() {
             showCallOverlay(true);
             playRingtone(false);
+            await initWebRtc(true);
             sendCallSignal("initiate");
         }
 
