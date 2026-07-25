@@ -40,6 +40,12 @@
         <h2 id="peerName" class="text-2xl font-bold mt-4 text-slate-100">Visitor</h2>
         <p id="callStatus" class="text-xs text-slate-400 mt-2">Connecting...</p>
 
+        <!-- Reconnecting Visual Badge -->
+        <div id="reconnectingBadge" class="hidden mt-2.5 inline-flex items-center gap-2 px-3.5 py-1.5 bg-amber-500/20 text-amber-300 font-bold text-xs rounded-full border border-amber-500/40 animate-pulse shadow-lg shadow-amber-950/30">
+            <i class="fa-solid fa-arrows-rotate animate-spin text-amber-400"></i>
+            <span>Connection Unstable • Reconnecting...</span>
+        </div>
+
         <!-- Connection Quality Indicator (Signal Bars) -->
         <div id="qualityIndicator" class="inline-flex items-center gap-2 mt-3 px-3.5 py-1.5 bg-slate-900/90 border border-slate-800 rounded-full text-xs shadow-md">
             <div id="signalBars" class="flex items-end gap-1 h-3.5 w-5">
@@ -76,6 +82,8 @@
 
     <!-- Animated Waveform Visualizer -->
     <div class="flex items-center justify-center relative my-12">
+        <!-- Dashed spinning outer amber ring shown during Reconnecting state -->
+        <div id="reconnectingRing" class="hidden absolute w-36 h-36 rounded-full border-2 border-dashed border-amber-400/80 animate-[spin_4s_linear_infinite] z-0"></div>
         <!-- Rotating dots overlay shown while calling/connecting -->
         <div id="connectingDots" class="absolute w-32 h-32 flex items-center justify-center animate-[spin_3s_linear_infinite] z-0 transition-all duration-300">
             <div class="absolute top-0 w-2.5 h-2.5 bg-emerald-400 rounded-full shadow-[0_0_8px_rgba(52,211,153,0.8)]"></div>
@@ -305,6 +313,70 @@
             }
         }
 
+        let isReconnecting = false;
+        let reconnectTimeout = null;
+
+        function setReconnectingUI(reconnecting) {
+            if (isReconnecting === reconnecting) return;
+            isReconnecting = reconnecting;
+
+            const badge = document.getElementById('reconnectingBadge');
+            const ring = document.getElementById('reconnectingRing');
+            const connectingDots = document.getElementById('connectingDots');
+            const statusEl = document.getElementById('callStatus');
+            const progressStatus = document.getElementById('callProgressStatus');
+
+            if (reconnecting) {
+                console.log("Owner entering Reconnecting state...");
+                if (badge) badge.classList.remove('hidden');
+                if (ring) ring.classList.remove('hidden');
+                if (connectingDots) connectingDots.classList.remove('hidden');
+
+                if (statusEl) {
+                    const mins = String(Math.floor(callSeconds / 60)).padStart(2, '0');
+                    const secs = String(callSeconds % 60).padStart(2, '0');
+                    statusEl.innerText = `Reconnecting... (${mins}:${secs})`;
+                }
+                if (progressStatus) {
+                    progressStatus.innerText = "Reconnecting...";
+                    if (progressStatus.parentElement) {
+                        progressStatus.parentElement.className = "flex items-center gap-1.5 text-amber-400 font-semibold text-[11px]";
+                    }
+                }
+                updateQualityUI(1, "Reconnecting...", "text-amber-400", "bg-amber-400");
+
+                if (!reconnectTimeout) {
+                    reconnectTimeout = setTimeout(() => {
+                        if (isReconnecting) {
+                            console.warn("Reconnection timeout (20s). Dropping call.");
+                            cleanup();
+                        }
+                    }, 20000);
+                }
+            } else {
+                console.log("Owner restored Connected state...");
+                if (reconnectTimeout) {
+                    clearTimeout(reconnectTimeout);
+                    reconnectTimeout = null;
+                }
+                if (badge) badge.classList.add('hidden');
+                if (ring) ring.classList.add('hidden');
+                if (connectingDots) connectingDots.classList.add('hidden');
+
+                if (progressStatus) {
+                    progressStatus.innerText = "Live Call";
+                    if (progressStatus.parentElement) {
+                        progressStatus.parentElement.className = "flex items-center gap-1.5 text-emerald-400 font-semibold text-[11px]";
+                    }
+                }
+                if (statusEl) {
+                    const mins = String(Math.floor(callSeconds / 60)).padStart(2, '0');
+                    const secs = String(callSeconds % 60).padStart(2, '0');
+                    statusEl.innerText = `Connected - ${mins}:${secs}`;
+                }
+            }
+        }
+
         function startCallTimer() {
             stopCallTimer();
             callSeconds = 0;
@@ -340,7 +412,14 @@
                 const secs = String(callSeconds % 60).padStart(2, '0');
                 const timeStr = `${mins}:${secs}`;
 
-                document.getElementById('callStatus').innerText = `Connected - ${timeStr}`;
+                const statusEl = document.getElementById('callStatus');
+                if (statusEl) {
+                    if (isReconnecting) {
+                        statusEl.innerText = `Reconnecting... (${timeStr})`;
+                    } else {
+                        statusEl.innerText = `Connected - ${timeStr}`;
+                    }
+                }
 
                 const timerDisplay = document.getElementById('callProgressBarTimer');
                 if (timerDisplay) {
@@ -483,9 +562,14 @@
                     return;
                 }
 
+                if (isReconnecting) {
+                    updateQualityUI(1, "Reconnecting...", "text-amber-400", "bg-amber-400");
+                    return;
+                }
+
                 const iceState = peerConnection.iceConnectionState;
                 if (iceState === 'disconnected' || iceState === 'failed' || iceState === 'closed') {
-                    updateQualityUI(1, "Weak / Reconnecting", "text-red-400", "bg-red-500");
+                    updateQualityUI(1, "Weak / Reconnecting", "text-amber-400", "bg-amber-400");
                     return;
                 }
                 if (iceState === 'checking' || iceState === 'new') {
@@ -549,34 +633,29 @@
             });
         }
 
-        async function initWebRtc() {
-            if (peerConnection) {
-                console.log("WebRTC already initialized.");
-                return;
-            }
-            console.log("Initializing WebRTC on Owner side.");
+        let pendingOffer = null;
+
+        async function hostCall() {
+            if (peerConnection) cleanup();
+            console.log("Owner hosting WebRTC call...");
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-                console.log("Microphone accessed successfully.");
             } catch (e) {
                 console.error("Microphone error:", e);
-                alert("Microphone permission denied or busy! Audio call cannot continue.");
-                hangup();
+                alert("Microphone permission required for Audio Call.");
+                cleanup();
                 return;
             }
 
             peerConnection = new RTCPeerConnection(rtcConfig);
-
-            localStream.getTracks().forEach(track => {
-                peerConnection.addTrack(track, localStream);
-            });
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
             peerConnection.ontrack = (event) => {
                 console.log("Owner received remote track:", event.streams[0]);
                 const remoteAudio = document.getElementById('remoteAudio');
                 if (remoteAudio) {
                     remoteAudio.srcObject = event.streams[0];
-                    remoteAudio.play().catch(err => console.warn("Audio autoplay blocked, playing on user gesture:", err));
+                    remoteAudio.play().catch(err => console.warn("Autoplay blocked:", err));
                 }
             };
 
@@ -588,37 +667,118 @@
 
             peerConnection.onconnectionstatechange = () => {
                 console.log("Owner connection state:", peerConnection.connectionState);
-                if (peerConnection.connectionState === 'connected') {
+                const state = peerConnection.connectionState;
+                if (state === 'connected') {
+                    setReconnectingUI(false);
                     startCallTimer();
-                } else if (peerConnection.connectionState === 'failed') {
+                } else if (state === 'connecting' || state === 'disconnected') {
+                    if (callSeconds > 0) {
+                        setReconnectingUI(true);
+                    }
+                } else if (state === 'failed' || state === 'closed') {
                     cleanup();
                 }
             };
 
             peerConnection.oniceconnectionstatechange = () => {
                 console.log("Owner ICE connection state:", peerConnection.iceConnectionState);
-                if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
+                const iceState = peerConnection.iceConnectionState;
+                if (iceState === 'connected' || iceState === 'completed') {
+                    setReconnectingUI(false);
                     startCallTimer();
-                } else if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'failed') {
+                } else if (iceState === 'disconnected' || iceState === 'checking') {
+                    if (callSeconds > 0) {
+                        setReconnectingUI(true);
+                    }
+                } else if (iceState === 'failed') {
                     cleanup();
                 }
             };
 
-            if (isCaller) {
-                // If owner is starting the call, create an offer
-                const offer = await peerConnection.createOffer();
-                await peerConnection.setLocalDescription(offer);
-                sendCallSignal(`offer:${encodeSignal(JSON.stringify(offer))}`);
-                document.getElementById('callStatus').innerText = "Ringing...";
-            } else {
-                // If owner is accepting the call, wait for the visitor to send the offer
-                document.getElementById('callStatus').innerText = "Answering...";
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            sendCallSignal(`initiate:${encodeSignal(JSON.stringify(offer))}`);
+            document.getElementById('callStatus').innerText = "Calling Visitor...";
+        }
+
+        async function joinCall(offerSdp) {
+            if (peerConnection) cleanup();
+            console.log("Owner joining host call...");
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            } catch (e) {
+                console.error("Microphone error:", e);
+                alert("Microphone permission required for Audio Call.");
+                cleanup();
+                return;
             }
+
+            peerConnection = new RTCPeerConnection(rtcConfig);
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+            peerConnection.ontrack = (event) => {
+                console.log("Owner received remote track:", event.streams[0]);
+                const remoteAudio = document.getElementById('remoteAudio');
+                if (remoteAudio) {
+                    remoteAudio.srcObject = event.streams[0];
+                    remoteAudio.play().catch(err => console.warn("Autoplay blocked:", err));
+                }
+            };
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    sendCallSignal(`ice:${encodeSignal(JSON.stringify(event.candidate))}`);
+                }
+            };
+
+            peerConnection.onconnectionstatechange = () => {
+                console.log("Owner connection state:", peerConnection.connectionState);
+                const state = peerConnection.connectionState;
+                if (state === 'connected') {
+                    setReconnectingUI(false);
+                    startCallTimer();
+                } else if (state === 'connecting' || state === 'disconnected') {
+                    if (callSeconds > 0) {
+                        setReconnectingUI(true);
+                    }
+                } else if (state === 'failed' || state === 'closed') {
+                    cleanup();
+                }
+            };
+
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log("Owner ICE connection state:", peerConnection.iceConnectionState);
+                const iceState = peerConnection.iceConnectionState;
+                if (iceState === 'connected' || iceState === 'completed') {
+                    setReconnectingUI(false);
+                    startCallTimer();
+                } else if (iceState === 'disconnected' || iceState === 'checking') {
+                    if (callSeconds > 0) {
+                        setReconnectingUI(true);
+                    }
+                } else if (iceState === 'failed') {
+                    cleanup();
+                }
+            };
+
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(offerSdp));
+
+            while (iceCandidatesQueue.length > 0) {
+                const cand = iceCandidatesQueue.shift();
+                if (cand) {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(cand)).catch(e => console.error("Queued ICE error:", e));
+                }
+            }
+
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            sendCallSignal(`answer:${encodeSignal(JSON.stringify(answer))}`);
+            document.getElementById('callStatus').innerText = "Connecting...";
         }
 
         function setupSseListener() {
             console.log("Owner subscribing to signaling stream:", ntfyTopic);
-            eventSource = new EventSource(`https://ntfy.sh/${ntfyTopic}/sse`);
+            eventSource = new EventSource(`https://ntfy.sh/${ntfyTopic}/sse?since=5m`);
             eventSource.onmessage = async (event) => {
                 try {
                     const data = JSON.parse(event.data);
@@ -628,37 +788,56 @@
                             const message = payload.message;
                             if (message && message.startsWith("_webrtc_call_:")) {
                                 const signalData = message.substring("_webrtc_call_:".length);
-                                const parts = signalData.split(":");
-                                const command = parts[0];
+                                const firstColonIndex = signalData.indexOf(":");
+                                const command = firstColonIndex !== -1 ? signalData.substring(0, firstColonIndex) : signalData;
+                                const payloadStr = firstColonIndex !== -1 ? signalData.substring(firstColonIndex + 1) : "";
 
                                 console.log("Owner received signal command:", command);
 
                                 if (command === "initiate") {
-                                    document.getElementById('callStatus').innerText = "Ringing...";
-                                } else if (command === "accept") {
-                                    // Visitor accepted the call
-                                    document.getElementById('callStatus').innerText = "Connecting...";
-                                    await initWebRtc();
+                                    if (payloadStr) {
+                                        try {
+                                            pendingOffer = JSON.parse(decodeSignal(payloadStr));
+                                            if (!isCaller && !peerConnection) {
+                                                await joinCall(pendingOffer);
+                                                pendingOffer = null;
+                                            }
+                                        } catch(e) {
+                                            console.error("Error parsing offer SDP:", e);
+                                        }
+                                    }
+                                } else if (command === "answer") {
+                                    if (payloadStr && peerConnection) {
+                                        try {
+                                            const answerSdp = JSON.parse(decodeSignal(payloadStr));
+                                            await peerConnection.setRemoteDescription(new RTCSessionDescription(answerSdp));
+                                            while (iceCandidatesQueue.length > 0) {
+                                                const cand = iceCandidatesQueue.shift();
+                                                if (cand) {
+                                                    await peerConnection.addIceCandidate(new RTCIceCandidate(cand)).catch(e => console.error("Queued ICE error:", e));
+                                                }
+                                            }
+                                            document.getElementById('callStatus').innerText = "Connecting...";
+                                        } catch(e) {
+                                            console.error("Error setting answer SDP:", e);
+                                        }
+                                    }
+                                } else if (command === "ice") {
+                                    if (payloadStr) {
+                                        try {
+                                            const candidate = JSON.parse(decodeSignal(payloadStr));
+                                            if (peerConnection && peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
+                                                await peerConnection.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.warn("ICE error:", e));
+                                            } else {
+                                                iceCandidatesQueue.push(candidate);
+                                            }
+                                        } catch(e) {
+                                            console.error("Error parsing ICE candidate:", e);
+                                        }
+                                    }
                                 } else if (command === "decline") {
                                     alert("Visitor is unavailable.");
                                     cleanup();
-                                } else if (command === "offer") {
-                                    triggerBrowserNotification("📞 SafeDoor Audio Call Request", {
-                                        body: `${visitorName} is calling you on SafeDoor!`,
-                                        tag: "safedoor-call-offer"
-                                    });
-                                    const sdp = JSON.parse(decodeSignal(parts[1]));
-                                    await handleOffer(sdp);
-                                } else if (command === "answer") {
-                                    const sdp = JSON.parse(decodeSignal(parts[1]));
-                                    await handleAnswer(sdp);
-                                } else if (command === "ice") {
-                                    const candidate = JSON.parse(decodeSignal(parts[1]));
-                                    if (peerConnection && peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
-                                        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.error(e));
-                                    } else {
-                                        iceCandidatesQueue.push(candidate);
-                                    }
                                 } else if (command === "hangup") {
                                     cleanup();
                                 }
@@ -679,38 +858,6 @@
                     console.error("Error processing SSE message:", e);
                 }
             };
-        }
-
-        async function handleOffer(sdp) {
-            document.getElementById('callStatus').innerText = "Connecting...";
-            if (!peerConnection) {
-                await initWebRtc();
-            }
-            if (peerConnection) {
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
-                
-                // Flush buffered ICE candidates
-                while (iceCandidatesQueue.length > 0) {
-                    const cand = iceCandidatesQueue.shift();
-                    await peerConnection.addIceCandidate(new RTCIceCandidate(cand)).catch(e => console.error("Error adding queued ICE:", e));
-                }
-
-                const answer = await peerConnection.createAnswer();
-                await peerConnection.setLocalDescription(answer);
-                sendCallSignal(`answer:${encodeSignal(JSON.stringify(answer))}`);
-            }
-        }
-
-        async function handleAnswer(sdp) {
-            if (peerConnection) {
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
-                
-                // Flush buffered ICE candidates
-                while (iceCandidatesQueue.length > 0) {
-                    const cand = iceCandidatesQueue.shift();
-                    await peerConnection.addIceCandidate(new RTCIceCandidate(cand)).catch(e => console.error("Error adding queued ICE:", e));
-                }
-            }
         }
 
         function toggleMute() {
@@ -793,6 +940,16 @@
         }
 
         function cleanup() {
+            isReconnecting = false;
+            if (reconnectTimeout) {
+                clearTimeout(reconnectTimeout);
+                reconnectTimeout = null;
+            }
+            const badge = document.getElementById('reconnectingBadge');
+            if (badge) badge.classList.add('hidden');
+            const ring = document.getElementById('reconnectingRing');
+            if (ring) ring.classList.add('hidden');
+
             stopCallTimer();
             stopNetworkQualityMonitor();
             if (eventSource) {
@@ -800,11 +957,11 @@
                 eventSource = null;
             }
             if (peerConnection) {
-                peerConnection.close();
+                try { peerConnection.close(); } catch(e) {}
                 peerConnection = null;
             }
             if (localStream) {
-                localStream.getTracks().forEach(track => track.stop());
+                try { localStream.getTracks().forEach(track => track.stop()); } catch(e) {}
                 localStream = null;
             }
             const remoteAudio = document.getElementById('remoteAudio');
@@ -821,12 +978,14 @@
         // Start call process
         initNotificationSystem();
         setupSseListener();
-        if (!isCaller) {
-            // If receiver, initiate immediately to accept the call sequence
-            initWebRtc();
+        if (isCaller) {
+            hostCall();
         } else {
-            // If caller, wait for the visitor's accept signal before creating RTC connection
-            document.getElementById('callStatus').innerText = "Calling...";
+            document.getElementById('callStatus').innerText = "Connecting...";
+            if (pendingOffer) {
+                joinCall(pendingOffer);
+                pendingOffer = null;
+            }
         }
     </script>
 </body>
