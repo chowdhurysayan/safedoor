@@ -29,10 +29,16 @@
                     <p class="text-[10px] text-slate-500 font-medium tracking-wider uppercase">Gatekeeper Portal</p>
                 </div>
             </div>
-            <span class="text-xs font-semibold px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-full border border-emerald-100 flex items-center gap-1.5">
-                <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
-                Secure End-to-End
-            </span>
+            <div class="flex items-center gap-2">
+                <button id="notiBtn" onclick="requestNotificationPermission()" class="text-xs font-semibold px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-full border border-amber-200 flex items-center gap-1.5 transition cursor-pointer">
+                    <i id="notiIcon" class="fa-solid fa-bell text-amber-500"></i>
+                    <span id="notiBtnText">Push Alerts</span>
+                </button>
+                <span class="text-xs font-semibold px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-full border border-emerald-100 flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
+                    Secure End-to-End
+                </span>
+            </div>
         </div>
     </header>
 
@@ -234,6 +240,7 @@
 
         // Initialize display label
         document.addEventListener('DOMContentLoaded', () => {
+            initNotificationSystem();
             // Setup default purpose button visual state
             selectPurpose('Parcel', 'Parcel Courier');
 
@@ -471,6 +478,115 @@
             window.location.href = cleanUrl;
         }
 
+        // --- Browser Notification API ---
+        function initNotificationSystem() {
+            if (!("Notification" in window)) {
+                updateNotificationUI("unsupported");
+                return;
+            }
+            updateNotificationUI(Notification.permission);
+        }
+
+        async function requestNotificationPermission() {
+            if (!("Notification" in window)) {
+                alert("This browser does not support desktop notifications.");
+                return;
+            }
+            try {
+                const permission = await Notification.requestPermission();
+                updateNotificationUI(permission);
+                if (permission === "granted") {
+                    triggerBrowserNotification("🔔 SafeDoor Push Alerts Enabled", {
+                        body: "You will receive immediate pop-up alerts when visitors arrive or send messages, even when this tab is inactive!",
+                        tag: "safedoor-test"
+                    });
+                } else if (permission === "denied") {
+                    alert("Push notifications are blocked in your browser settings. Please grant notification permissions to receive visitor alerts.");
+                }
+            } catch (e) {
+                console.error("Error requesting notification permission:", e);
+            }
+        }
+
+        function updateNotificationUI(status) {
+            const btnText = document.getElementById('notiBtnText');
+            const icon = document.getElementById('notiIcon');
+            const btn = document.getElementById('notiBtn');
+            if (!btnText || !icon) return;
+
+            if (status === "granted") {
+                btnText.innerText = "Alerts Active";
+                icon.className = "fa-solid fa-bell-circle-check text-emerald-600";
+                if (btn) {
+                    btn.className = "text-xs font-semibold px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-full border border-emerald-200 flex items-center gap-1.5 transition cursor-pointer";
+                }
+            } else if (status === "denied") {
+                btnText.innerText = "Alerts Blocked";
+                icon.className = "fa-solid fa-bell-slash text-red-500";
+                if (btn) {
+                    btn.className = "text-xs font-semibold px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-800 rounded-full border border-red-200 flex items-center gap-1.5 transition cursor-pointer";
+                }
+            } else if (status === "unsupported") {
+                btnText.innerText = "Alerts Unsupported";
+                icon.className = "fa-solid fa-bell-slash text-slate-400";
+            } else {
+                btnText.innerText = "Push Alerts";
+                icon.className = "fa-solid fa-bell text-amber-500";
+            }
+        }
+
+        function triggerHapticFeedback() {
+            if (window.AndroidCall && typeof window.AndroidCall.vibrate === 'function') {
+                try {
+                    window.AndroidCall.vibrate();
+                } catch (e) {
+                    console.warn("AndroidCall vibrate failed:", e);
+                }
+            }
+            if ("vibrate" in navigator) {
+                try {
+                    navigator.vibrate([80, 60, 120]);
+                } catch (e) {
+                    console.warn("navigator.vibrate failed:", e);
+                }
+            }
+        }
+
+        function triggerBrowserNotification(title, options = {}) {
+            triggerHapticFeedback();
+            if (!("Notification" in window)) return;
+            
+            if (Notification.permission === "granted") {
+                try {
+                    const iconUrl = options.icon || "https://cdn-icons-png.flaticon.com/512/3602/3602145.png";
+                    const notification = new Notification(title, {
+                        body: options.body || "A visitor is at your door!",
+                        icon: iconUrl,
+                        badge: iconUrl,
+                        tag: options.tag || ("safedoor-" + Date.now()),
+                        renotify: true,
+                        requireInteraction: true,
+                        silent: false
+                    });
+
+                    notification.onclick = function(event) {
+                        event.preventDefault();
+                        window.focus();
+                        this.close();
+                    };
+                } catch (e) {
+                    console.error("Browser notification error:", e);
+                }
+            } else if (Notification.permission === "default") {
+                Notification.requestPermission().then(permission => {
+                    updateNotificationUI(permission);
+                    if (permission === "granted") {
+                        triggerBrowserNotification(title, options);
+                    }
+                });
+            }
+        }
+
         let chatInitialized = false;
         let eventSource = null;
         let visitorTimestamp = 0;
@@ -493,11 +609,32 @@
                         const payload = JSON.parse(data.message);
                         const msgVisitorTs = Number(payload.visitorTimestamp);
                         const currentVisitorTs = Number(visitorTimestamp);
+                        
+                        // Handle visitor arrival alert if payload contains visitor registration details
+                        if (payload.visitorName && payload.purpose) {
+                            triggerBrowserNotification("🔔 SafeDoor Alert: Visitor Arrived!", {
+                                body: `${payload.visitorName} (${payload.purpose}) is at your door!`,
+                                tag: "visitor-arrived"
+                            });
+                        }
+
                         if (payload.type === "chat_message" && (msgVisitorTs === currentVisitorTs || Math.abs(msgVisitorTs - currentVisitorTs) < 3000)) {
                             if (payload.message && payload.message.startsWith("_webrtc_call_:")) {
+                                if (payload.message.includes("offer:")) {
+                                    triggerBrowserNotification("📞 SafeDoor Audio Call Request", {
+                                        body: `${payload.sender || "Visitor"} is starting a voice call!`,
+                                        tag: "call-offer"
+                                    });
+                                }
                                 handleIncomingCallSignal(payload.message, payload.sender);
                                 return;
                             }
+
+                            // Trigger push notification for incoming chat message
+                            triggerBrowserNotification(`💬 Message from ${payload.sender}`, {
+                                body: payload.message,
+                                tag: "chat-msg"
+                            });
 
                             // Ensure chat section is shown!
                             const chatSection = document.getElementById('chatSection');
@@ -794,6 +931,31 @@
             <span class="px-3 py-1 bg-emerald-500/20 text-emerald-300 font-semibold text-[10px] uppercase tracking-wider rounded-full border border-emerald-500/30">SafeDoor Audio Call</span>
             <h2 class="text-2xl font-bold mt-4 text-slate-100" id="callPeerName">Resident</h2>
             <p class="text-xs text-slate-400 mt-1.5" id="callStatusText">Calling...</p>
+
+            <!-- Connection Quality Indicator (Signal Bars) -->
+            <div id="qualityIndicator" class="inline-flex items-center gap-2 mt-3 px-3.5 py-1.5 bg-slate-900/90 border border-slate-800 rounded-full text-xs shadow-md">
+                <div id="signalBars" class="flex items-end gap-1 h-3.5 w-5">
+                    <div id="sig1" class="w-1 rounded-xs bg-slate-600 h-1.5 transition-all duration-300"></div>
+                    <div id="sig2" class="w-1 rounded-xs bg-slate-600 h-2.5 transition-all duration-300"></div>
+                    <div id="sig3" class="w-1 rounded-xs bg-slate-600 h-3.5 transition-all duration-300"></div>
+                    <div id="sig4" class="w-1 rounded-xs bg-slate-600 h-4 transition-all duration-300"></div>
+                </div>
+                <span id="qualityText" class="font-semibold text-[11px] text-slate-400">Signal: Connecting...</span>
+            </div>
+
+            <!-- Call Duration & Subtle Progress Bar -->
+            <div id="callProgressContainer" class="w-full max-w-xs mx-auto mt-4 px-1 hidden transition-all duration-300">
+                <div class="flex items-center justify-between text-[11px] font-semibold text-slate-400 mb-1.5">
+                    <span class="flex items-center gap-1.5 text-emerald-400">
+                        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                        <span id="callProgressStatus">Live Call</span>
+                    </span>
+                    <span id="callProgressBarTimer" class="font-mono text-slate-200">00:00</span>
+                </div>
+                <div class="w-full h-1.5 bg-slate-900/90 rounded-full overflow-hidden p-0.5 border border-slate-800 shadow-inner">
+                    <div id="callProgressBar" class="h-full bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-400 rounded-full w-0 transition-all duration-500 ease-out shadow-[0_0_8px_rgba(52,211,153,0.6)]"></div>
+                </div>
+            </div>
         </div>
 
         <!-- Pulse Ring animation for call status -->
@@ -819,23 +981,30 @@
         <div class="w-full max-w-xs flex flex-col gap-4 mb-8">
             <!-- Incoming call action buttons -->
             <div id="incomingCallActions" class="hidden flex items-center justify-around gap-6">
-                <button onclick="declineWebCall()" class="w-16 h-16 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white rounded-full flex items-center justify-center shadow-md transition duration-150">
+                <button onclick="declineWebCall()" class="w-16 h-16 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white rounded-full flex items-center justify-center shadow-lg shadow-rose-950/40 border-2 border-rose-400/30 transition duration-150">
                     <i class="fa-solid fa-phone-slash text-xl"></i>
                 </button>
-                <button onclick="acceptWebCall()" class="w-16 h-16 bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 text-white rounded-full flex items-center justify-center shadow-md transition duration-150 animate-bounce">
+                <button onclick="acceptWebCall()" class="w-16 h-16 bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 text-white rounded-full flex items-center justify-center shadow-lg shadow-emerald-950/40 border-2 border-emerald-300/40 transition duration-150 animate-bounce">
                     <i class="fa-solid fa-phone text-xl"></i>
                 </button>
             </div>
 
             <!-- Active call action buttons -->
             <div id="activeCallActions" class="flex flex-col gap-3">
-                <button id="muteCallBtn" onclick="toggleMuteCall()" class="py-3 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 border border-slate-700/60 font-bold rounded-xl text-xs transition duration-150 flex items-center justify-center gap-2">
-                    <i id="muteIcon" class="fa-solid fa-microphone-slash"></i>
-                    <span id="muteBtnText">Mute Microphone</span>
-                </button>
-                <button onclick="hangupCall()" class="py-3 bg-red-600 hover:bg-red-700 active:bg-red-800 font-bold rounded-xl text-xs transition duration-150 flex items-center justify-center gap-2 shadow-sm">
-                    <i class="fa-solid fa-phone-slash"></i>
-                    <span>End Call</span>
+                <div class="grid grid-cols-2 gap-3">
+                    <button id="muteCallBtn" onclick="toggleMuteCall()" class="py-3.5 bg-slate-900/90 hover:bg-slate-800 active:bg-slate-700 border border-slate-700/80 font-semibold rounded-2xl text-xs transition duration-150 flex items-center justify-center gap-2 text-slate-200 shadow-md">
+                        <i id="muteIcon" class="fa-solid fa-microphone-slash text-slate-400"></i>
+                        <span id="muteBtnText">Mute</span>
+                    </button>
+                    <button id="speakerCallBtn" onclick="toggleSpeakerphoneCall()" class="py-3.5 bg-slate-900/90 hover:bg-slate-800 active:bg-slate-700 border border-emerald-500/40 font-semibold rounded-2xl text-xs transition duration-150 flex items-center justify-center gap-2 text-emerald-400 shadow-md">
+                        <i id="speakerIcon" class="fa-solid fa-volume-high text-emerald-400"></i>
+                        <span id="speakerBtnText">Speakerphone</span>
+                    </button>
+                </div>
+                <!-- Distinct accent color End Call button to prevent accidental hangups -->
+                <button onclick="hangupCall()" class="w-full py-3.5 bg-gradient-to-r from-rose-600 via-red-600 to-rose-700 hover:from-rose-500 hover:to-red-600 active:scale-[0.98] text-white font-bold text-xs rounded-2xl border-2 border-rose-400/40 shadow-[0_0_20px_rgba(225,29,72,0.35)] flex items-center justify-center gap-2.5 transition-all duration-200 cursor-pointer">
+                    <i class="fa-solid fa-phone-slash text-sm"></i>
+                    <span class="tracking-wide">End Call</span>
                 </button>
             </div>
         </div>
@@ -852,11 +1021,13 @@
         let callTimerInterval = null;
         let callSeconds = 0;
         let isMuted = false;
+        let iceCandidatesQueue = [];
 
         const rtcConfig = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' }
             ]
         };
 
@@ -959,6 +1130,16 @@
             callSeconds = 0;
             document.getElementById('callStatusText').innerText = "Connected - 00:00";
             
+            // Show call progress container & reset bar
+            const progressContainer = document.getElementById('callProgressContainer');
+            if (progressContainer) {
+                progressContainer.classList.remove('hidden');
+            }
+            const progressBar = document.getElementById('callProgressBar');
+            if (progressBar) {
+                progressBar.style.width = '0%';
+            }
+
             // Hide connecting dots and pulsing rings once handshake completes & call connects
             const connectingDots = document.getElementById('connectingDots');
             if (connectingDots) {
@@ -977,8 +1158,21 @@
                 callSeconds++;
                 const mins = String(Math.floor(callSeconds / 60)).padStart(2, '0');
                 const secs = String(callSeconds % 60).padStart(2, '0');
-                document.getElementById('callStatusText').innerText = `Connected - ${mins}:${secs}`;
+                const timeStr = `${mins}:${secs}`;
+
+                document.getElementById('callStatusText').innerText = `Connected - ${timeStr}`;
+
+                const timerDisplay = document.getElementById('callProgressBarTimer');
+                if (timerDisplay) {
+                    timerDisplay.innerText = timeStr;
+                }
+                if (progressBar) {
+                    const pct = Math.min(100, Math.round((callSeconds / 300) * 100));
+                    progressBar.style.width = `${pct}%`;
+                }
             }, 1000);
+
+            startNetworkQualityMonitor();
         }
 
         function stopCallTimer() {
@@ -986,14 +1180,104 @@
                 clearInterval(callTimerInterval);
                 callTimerInterval = null;
             }
+            const progressContainer = document.getElementById('callProgressContainer');
+            if (progressContainer) {
+                progressContainer.classList.add('hidden');
+            }
+            const progressBar = document.getElementById('callProgressBar');
+            if (progressBar) {
+                progressBar.style.width = '0%';
+            }
+        }
+
+        let statsInterval = null;
+
+        function startNetworkQualityMonitor() {
+            if (statsInterval) clearInterval(statsInterval);
+            
+            statsInterval = setInterval(async () => {
+                if (!peerConnection) {
+                    updateQualityUI(0, "Disconnected");
+                    return;
+                }
+
+                const iceState = peerConnection.iceConnectionState;
+                if (iceState === 'disconnected' || iceState === 'failed' || iceState === 'closed') {
+                    updateQualityUI(1, "Weak / Reconnecting", "text-red-400", "bg-red-500");
+                    return;
+                }
+                if (iceState === 'checking' || iceState === 'new') {
+                    updateQualityUI(2, "Connecting...", "text-amber-400", "bg-amber-400");
+                    return;
+                }
+
+                try {
+                    const stats = await peerConnection.getStats();
+                    let currentRtt = null;
+
+                    stats.forEach(report => {
+                        if (report.type === 'remote-inbound-rtp' && report.roundTripTime !== undefined) {
+                            currentRtt = report.roundTripTime * 1000;
+                        } else if (report.type === 'candidate-pair' && report.state === 'succeeded' && report.currentRoundTripTime !== undefined) {
+                            currentRtt = report.currentRoundTripTime * 1000;
+                        }
+                    });
+
+                    if (currentRtt === null) {
+                        updateQualityUI(4, "HD • Strong Signal", "text-emerald-400", "bg-emerald-400");
+                    } else if (currentRtt < 120) {
+                        updateQualityUI(4, `HD • Strong (${Math.round(currentRtt)}ms)`, "text-emerald-400", "bg-emerald-400");
+                    } else if (currentRtt < 250) {
+                        updateQualityUI(3, `Good (${Math.round(currentRtt)}ms)`, "text-emerald-300", "bg-emerald-400");
+                    } else if (currentRtt < 450) {
+                        updateQualityUI(2, `Fair (${Math.round(currentRtt)}ms)`, "text-amber-400", "bg-amber-400");
+                    } else {
+                        updateQualityUI(1, `Poor (${Math.round(currentRtt)}ms)`, "text-red-400", "bg-red-500");
+                    }
+                } catch (e) {
+                    updateQualityUI(3, "HD • Connected", "text-emerald-400", "bg-emerald-400");
+                }
+            }, 1500);
+        }
+
+        function stopNetworkQualityMonitor() {
+            if (statsInterval) {
+                clearInterval(statsInterval);
+                statsInterval = null;
+            }
+        }
+
+        function updateQualityUI(bars, label, textColor = "text-emerald-400", barColor = "bg-emerald-400") {
+            const qualityText = document.getElementById('qualityText');
+            if (qualityText) {
+                qualityText.innerText = label;
+                qualityText.className = `font-semibold text-[11px] ${textColor}`;
+            }
+
+            const sigs = ['sig1', 'sig2', 'sig3', 'sig4'];
+            sigs.forEach((id, index) => {
+                const el = document.getElementById(id);
+                if (el) {
+                    if (index < bars) {
+                        el.className = `w-1 rounded-xs ${barColor} transition-all duration-300`;
+                    } else {
+                        el.className = `w-1 rounded-xs bg-slate-700 transition-all duration-300`;
+                    }
+                }
+            });
         }
 
         async function initWebRtc(isCaller) {
+            if (peerConnection) {
+                console.log("WebRTC already initialized on Visitor side.");
+                return;
+            }
             console.log("Initializing WebRTC, isCaller =", isCaller);
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
                 console.log("Microphone acquired.");
             } catch (e) {
+                console.error("Microphone access error:", e);
                 alert("Microphone permission is required for Audio Calls! Please enable it in your browser.");
                 hangupCall();
                 return;
@@ -1006,10 +1290,11 @@
             });
             
             peerConnection.ontrack = (event) => {
-                console.log("Remote stream track received.");
+                console.log("Remote stream track received:", event.streams[0]);
                 const remoteAudio = document.getElementById('remoteAudio');
                 if (remoteAudio) {
                     remoteAudio.srcObject = event.streams[0];
+                    remoteAudio.play().catch(err => console.warn("Audio autoplay blocked:", err));
                 }
             };
             
@@ -1021,7 +1306,7 @@
             
             peerConnection.oniceconnectionstatechange = () => {
                 console.log("ICE connection state change:", peerConnection.iceConnectionState);
-                if (peerConnection.iceConnectionState === 'connected') {
+                if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
                     stopRingtone();
                     startCallTimer();
                 } else if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'failed') {
@@ -1088,8 +1373,10 @@
                 await handleAnswer(sdp);
             } else if (command === "ice") {
                 const candidate = JSON.parse(decodeSignal(parts[1]));
-                if (peerConnection) {
+                if (peerConnection && peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
                     peerConnection.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.error("Error adding ICE", e));
+                } else {
+                    iceCandidatesQueue.push(candidate);
                 }
             } else if (command === "hangup") {
                 cleanupCall();
@@ -1099,9 +1386,18 @@
         async function handleOffer(sdp) {
             stopRingtone();
             document.getElementById('callStatusText').innerText = "Connecting...";
-            await initWebRtc(false);
+            if (!peerConnection) {
+                await initWebRtc(false);
+            }
             if (peerConnection) {
                 await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
+                
+                // Flush buffered ICE candidates
+                while (iceCandidatesQueue.length > 0) {
+                    const cand = iceCandidatesQueue.shift();
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(cand)).catch(e => console.error("Error adding queued ICE:", e));
+                }
+
                 const answer = await peerConnection.createAnswer();
                 await peerConnection.setLocalDescription(answer);
                 sendCallSignal(`answer:${encodeSignal(JSON.stringify(answer))}`);
@@ -1111,6 +1407,12 @@
         async function handleAnswer(sdp) {
             if (peerConnection) {
                 await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
+                
+                // Flush buffered ICE candidates
+                while (iceCandidatesQueue.length > 0) {
+                    const cand = iceCandidatesQueue.shift();
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(cand)).catch(e => console.error("Error adding queued ICE:", e));
+                }
             }
         }
 
@@ -1154,16 +1456,74 @@
             const btnText = document.getElementById('muteBtnText');
             if (isMuted) {
                 icon.className = "fa-solid fa-microphone text-emerald-400";
-                btnText.innerText = "Unmute Microphone";
+                btnText.innerText = "Unmute";
             } else {
                 icon.className = "fa-solid fa-microphone-slash";
-                btnText.innerText = "Mute Microphone";
+                btnText.innerText = "Mute";
+            }
+        }
+
+        let isSpeakerphoneOn = true;
+
+        async function toggleSpeakerphoneCall() {
+            isSpeakerphoneOn = !isSpeakerphoneOn;
+            
+            // 1. Check Native Android bridge
+            if (window.AndroidCall && typeof window.AndroidCall.setSpeakerphone === 'function') {
+                try {
+                    window.AndroidCall.setSpeakerphone(isSpeakerphoneOn);
+                } catch (e) {
+                    console.warn("AndroidCall setSpeakerphone failed:", e);
+                }
+            }
+
+            // 2. Check HTMLMediaElement setSinkId for browser audio device routing
+            const remoteAudio = document.getElementById('remoteAudio');
+            if (remoteAudio && typeof remoteAudio.setSinkId === 'function' && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+                try {
+                    const devices = await navigator.mediaDevices.enumerateDevices();
+                    const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
+                    if (audioOutputs.length > 1) {
+                        const targetDevice = audioOutputs.find(d => 
+                            isSpeakerphoneOn ? (d.label.toLowerCase().includes('speaker') || d.deviceId === 'default') 
+                                             : (d.label.toLowerCase().includes('earpiece') || d.label.toLowerCase().includes('handset') || d.label.toLowerCase().includes('telephony'))
+                        ) || (isSpeakerphoneOn ? audioOutputs[0] : audioOutputs[audioOutputs.length - 1]);
+                        
+                        if (targetDevice && targetDevice.deviceId) {
+                            await remoteAudio.setSinkId(targetDevice.deviceId);
+                        }
+                    }
+                } catch (err) {
+                    console.warn("setSinkId route error:", err);
+                }
+            }
+
+            updateSpeakerphoneUi();
+        }
+
+        function updateSpeakerphoneUi() {
+            const btnText = document.getElementById('speakerBtnText');
+            const icon = document.getElementById('speakerIcon');
+            const btn = document.getElementById('speakerCallBtn');
+            if (isSpeakerphoneOn) {
+                if (btnText) btnText.innerText = "Speakerphone";
+                if (icon) icon.className = "fa-solid fa-volume-high text-emerald-400";
+                if (btn) {
+                    btn.className = "py-3 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 border border-emerald-500/30 font-bold rounded-xl text-xs transition duration-150 flex items-center justify-center gap-2 text-emerald-400";
+                }
+            } else {
+                if (btnText) btnText.innerText = "Handset Audio";
+                if (icon) icon.className = "fa-solid fa-ear-listen text-amber-400";
+                if (btn) {
+                    btn.className = "py-3 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 border border-amber-500/30 font-bold rounded-xl text-xs transition duration-150 flex items-center justify-center gap-2 text-amber-300";
+                }
             }
         }
 
         function cleanupCall() {
             stopRingtone();
             stopCallTimer();
+            stopNetworkQualityMonitor();
             
             if (peerConnection) {
                 peerConnection.close();
