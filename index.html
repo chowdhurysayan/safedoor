@@ -618,17 +618,19 @@
                             });
                         }
 
-                        if (payload.type === "chat_message" && (msgVisitorTs === currentVisitorTs || Math.abs(msgVisitorTs - currentVisitorTs) < 3000)) {
+                        if (payload.type === "chat_message") {
                             if (payload.message && payload.message.startsWith("_webrtc_call_:")) {
-                                if (payload.message.includes("offer:")) {
+                                if (payload.message.includes("initiate:") || payload.message.includes("offer:")) {
                                     triggerBrowserNotification("📞 SafeDoor Audio Call Request", {
-                                        body: `${payload.sender || "Visitor"} is starting a voice call!`,
+                                        body: `${payload.sender || "Resident"} is starting a voice call!`,
                                         tag: "call-offer"
                                     });
                                 }
                                 handleIncomingCallSignal(payload.message, payload.sender);
                                 return;
                             }
+
+                            if (msgVisitorTs === currentVisitorTs || Math.abs(msgVisitorTs - currentVisitorTs) < 3000) {
 
                             // Trigger push notification for incoming chat message
                             triggerBrowserNotification(`💬 Message from ${payload.sender}`, {
@@ -1016,12 +1018,135 @@
                 </button>
             </div>
         </div>
+
+        <!-- Live WebRTC & Signaling Debugger Console -->
+        <div id="visitorCallDebuggerContainer" class="w-full max-w-xs sm:max-w-sm mx-auto mt-2 mb-4 bg-slate-950/95 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl text-left z-20">
+            <div class="bg-slate-900/90 px-3.5 py-2 border-b border-slate-800/80 flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <span class="relative flex h-2 w-2">
+                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                    </span>
+                    <span class="font-mono text-[11px] font-bold tracking-wide text-slate-200">RTC Debugger Console</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <button onclick="copyVisitorDebugLogs()" class="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-[10px] font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer shadow-sm">
+                        <i class="fa-solid fa-copy text-[10px]"></i>
+                        <span>Copy All Logs</span>
+                    </button>
+                    <button onclick="clearVisitorDebugLogs()" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium rounded-lg transition-all cursor-pointer" title="Clear Console">
+                        <i class="fa-solid fa-trash-can text-[10px]"></i>
+                    </button>
+                    <button onclick="toggleVisitorDebugConsole()" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium rounded-lg transition-all cursor-pointer" title="Toggle Size">
+                        <i id="visitorDebugToggleIcon" class="fa-solid fa-chevron-down text-[10px]"></i>
+                    </button>
+                </div>
+            </div>
+            <div id="visitorDebugLogsBox" class="p-3 max-h-48 overflow-y-auto font-mono text-[10px] leading-relaxed space-y-1.5 select-text bg-slate-950/95 scrollbar-thin scrollbar-thumb-slate-800">
+                <!-- Dynamic logs -->
+            </div>
+            <div id="visitorCopyToast" class="hidden bg-emerald-600 text-white text-[10px] font-bold py-1 px-3 text-center transition-all">
+                Copied debug logs to clipboard!
+            </div>
+        </div>
     </div>
     
     <audio id="remoteAudio" autoplay></audio>
 
     <!-- WebRTC audio call javascript -->
     <script>
+        let visitorDebugLogsBuffer = [];
+
+        function addVisitorDebugLog(category, message, details = null) {
+            const now = new Date();
+            const timeStr = now.toTimeString().split(' ')[0] + '.' + String(now.getMilliseconds()).padStart(3, '0');
+            
+            let colorClass = "text-slate-300";
+            switch(category.toUpperCase()) {
+                case 'INIT': colorClass = "text-cyan-400"; break;
+                case 'MEDIA': colorClass = "text-teal-300"; break;
+                case 'SIGNAL OUT': colorClass = "text-indigo-400"; break;
+                case 'SIGNAL IN': colorClass = "text-emerald-400 font-semibold"; break;
+                case 'RTC STATE': colorClass = "text-amber-300 font-semibold"; break;
+                case 'ICE': colorClass = "text-sky-300"; break;
+                case 'ERROR': colorClass = "text-rose-400 font-bold"; break;
+                case 'WARN': colorClass = "text-yellow-400"; break;
+                default: colorClass = "text-slate-300";
+            }
+
+            let detailStr = details ? (typeof details === 'object' ? JSON.stringify(details, null, 2) : String(details)) : '';
+            const rawLine = `[${timeStr}] [${category}] ${message}${detailStr ? ' -> ' + detailStr : ''}`;
+            visitorDebugLogsBuffer.push(rawLine);
+
+            const logsBox = document.getElementById('visitorDebugLogsBox');
+            if (logsBox) {
+                const logItem = document.createElement('div');
+                logItem.className = `break-all ${colorClass}`;
+                
+                let html = `<span class="text-slate-500">[${timeStr}]</span> <span class="font-bold">[${category}]</span> ${escapeHtml(message)}`;
+                if (detailStr) {
+                    html += `<pre class="mt-0.5 p-1 bg-slate-900/90 border border-slate-800/80 rounded text-[9px] text-slate-300 overflow-x-auto select-all whitespace-pre-wrap">${escapeHtml(detailStr)}</pre>`;
+                }
+                logItem.innerHTML = html;
+                logsBox.appendChild(logItem);
+                logsBox.scrollTop = logsBox.scrollHeight;
+            }
+        }
+
+        function copyVisitorDebugLogs() {
+            if (visitorDebugLogsBuffer.length === 0) {
+                alert("No debug logs to copy yet.");
+                return;
+            }
+            const fullText = visitorDebugLogsBuffer.join('\n');
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(fullText).then(() => {
+                    showVisitorCopyToast(`Copied ${visitorDebugLogsBuffer.length} log entries to clipboard!`);
+                }).catch(() => fallbackCopyVisitorText(fullText));
+            } else {
+                fallbackCopyVisitorText(fullText);
+            }
+        }
+
+        function fallbackCopyVisitorText(fullText) {
+            const textarea = document.createElement('textarea');
+            textarea.value = fullText;
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+            showVisitorCopyToast(`Copied ${visitorDebugLogsBuffer.length} log entries to clipboard!`);
+        }
+
+        function showVisitorCopyToast(msg) {
+            const toast = document.getElementById('visitorCopyToast');
+            if (toast) {
+                toast.innerText = msg;
+                toast.classList.remove('hidden');
+                setTimeout(() => toast.classList.add('hidden'), 2500);
+            }
+        }
+
+        function clearVisitorDebugLogs() {
+            visitorDebugLogsBuffer = [];
+            const logsBox = document.getElementById('visitorDebugLogsBox');
+            if (logsBox) logsBox.innerHTML = '<div class="text-slate-500 italic">Console logs cleared.</div>';
+        }
+
+        function toggleVisitorDebugConsole() {
+            const logsBox = document.getElementById('visitorDebugLogsBox');
+            const icon = document.getElementById('visitorDebugToggleIcon');
+            if (logsBox) {
+                if (logsBox.classList.contains('hidden')) {
+                    logsBox.classList.remove('hidden');
+                    if (icon) icon.className = "fa-solid fa-chevron-down text-[10px]";
+                } else {
+                    logsBox.classList.add('hidden');
+                    if (icon) icon.className = "fa-solid fa-chevron-up text-[10px]";
+                }
+            }
+        }
+
         let localStream = null;
         let peerConnection = null;
         let audioCtx = null;
@@ -1357,79 +1482,97 @@
 
         async function createHostCall() {
             if (peerConnection) cleanupCall();
-            console.log("Visitor starting host call...");
+            addVisitorDebugLog('INIT', 'Visitor hosting WebRTC call...');
             try {
+                addVisitorDebugLog('MEDIA', 'Requesting microphone access (getUserMedia)...');
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                addVisitorDebugLog('MEDIA', 'Microphone granted', { tracks: localStream.getAudioTracks().map(t => ({ label: t.label, enabled: t.enabled, readyState: t.readyState })) });
             } catch (e) {
-                console.error("Microphone access error:", e);
+                addVisitorDebugLog('ERROR', 'Microphone error: ' + e.message, e);
                 alert("Microphone permission is required for Audio Calls!");
                 cleanupCall();
                 return;
             }
 
+            addVisitorDebugLog('INIT', 'Creating RTCPeerConnection...', { iceServersCount: rtcConfig.iceServers.length });
             peerConnection = new RTCPeerConnection(rtcConfig);
-            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+            localStream.getTracks().forEach(track => {
+                peerConnection.addTrack(track, localStream);
+                addVisitorDebugLog('MEDIA', `Added local track (${track.kind}) to peerConnection`);
+            });
 
             peerConnection.ontrack = (event) => {
-                console.log("Visitor received remote track:", event.streams[0]);
+                addVisitorDebugLog('MEDIA', 'Received remote audio track from Resident', { streamId: event.streams[0]?.id });
                 const remoteAudio = document.getElementById('remoteAudio');
                 if (remoteAudio) {
                     remoteAudio.srcObject = event.streams[0];
-                    remoteAudio.play().catch(err => console.warn("Autoplay blocked:", err));
+                    remoteAudio.play().catch(err => addVisitorDebugLog('WARN', 'Autoplay blocked: ' + err.message));
                 }
             };
 
             peerConnection.onicecandidate = (event) => {
                 if (event.candidate) {
+                    addVisitorDebugLog('ICE', 'Generated local ICE candidate', { protocol: event.candidate.protocol, snippet: event.candidate.candidate.substring(0, 50) });
                     sendCallSignal(`ice:${encodeSignal(JSON.stringify(event.candidate))}`);
+                } else {
+                    addVisitorDebugLog('ICE', 'Local ICE candidate gathering complete');
                 }
             };
 
             peerConnection.onconnectionstatechange = () => {
-                console.log("Visitor connection state:", peerConnection.connectionState);
                 const state = peerConnection.connectionState;
+                addVisitorDebugLog('RTC STATE', `connectionState -> ${state}`);
                 if (state === 'connected') {
                     stopRingtone();
                     setReconnectingUI(false);
                     startCallTimer();
                 } else if (state === 'connecting' || state === 'disconnected') {
-                    if (callSeconds > 0) {
-                        setReconnectingUI(true);
-                    }
+                    if (callSeconds > 0) setReconnectingUI(true);
                 } else if (state === 'failed' || state === 'closed') {
                     cleanupCall();
                 }
             };
 
             peerConnection.oniceconnectionstatechange = () => {
-                console.log("Visitor ICE state:", peerConnection.iceConnectionState);
                 const iceState = peerConnection.iceConnectionState;
+                addVisitorDebugLog('RTC STATE', `iceConnectionState -> ${iceState}`);
                 if (iceState === 'connected' || iceState === 'completed') {
                     stopRingtone();
                     setReconnectingUI(false);
                     startCallTimer();
                 } else if (iceState === 'disconnected' || iceState === 'checking') {
-                    if (callSeconds > 0) {
-                        setReconnectingUI(true);
-                    }
+                    if (callSeconds > 0) setReconnectingUI(true);
                 } else if (iceState === 'failed') {
                     cleanupCall();
                 }
             };
 
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
-            sendCallSignal(`initiate:${encodeSignal(JSON.stringify(offer))}`);
-            document.getElementById('callStatusText').innerText = "Calling Owner...";
+            peerConnection.onsignalingstatechange = () => {
+                addVisitorDebugLog('RTC STATE', `signalingState -> ${peerConnection.signalingState}`);
+            };
+
+            try {
+                addVisitorDebugLog('SIGNAL OUT', 'Creating SDP Offer...');
+                const offer = await peerConnection.createOffer();
+                addVisitorDebugLog('SIGNAL OUT', 'Setting Local Description (Offer)...', { type: offer.type });
+                await peerConnection.setLocalDescription(offer);
+                addVisitorDebugLog('SIGNAL OUT', 'Sending Offer signal to Resident...');
+                sendCallSignal(`initiate:${encodeSignal(JSON.stringify(offer))}`);
+                document.getElementById('callStatusText').innerText = "Calling Owner...";
+            } catch(e) {
+                addVisitorDebugLog('ERROR', 'Error creating/setting offer: ' + e.message, e);
+            }
         }
 
         async function joinHostCall(offerSdp) {
             if (peerConnection) cleanupCall();
-            console.log("Visitor joining host call with offer SDP...");
+            addVisitorDebugLog('INIT', 'Visitor joining call from Resident offer...');
             try {
+                addVisitorDebugLog('MEDIA', 'Requesting microphone access (getUserMedia)...');
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                addVisitorDebugLog('MEDIA', 'Microphone granted', { tracks: localStream.getAudioTracks().map(t => ({ label: t.label, enabled: t.enabled, readyState: t.readyState })) });
             } catch (e) {
-                console.error("Microphone error:", e);
+                addVisitorDebugLog('ERROR', 'Microphone error: ' + e.message, e);
                 alert("Microphone permission required for Audio Call.");
                 cleanupCall();
                 return;
@@ -1439,69 +1582,82 @@
             localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
             peerConnection.ontrack = (event) => {
-                console.log("Visitor received remote track:", event.streams[0]);
+                addVisitorDebugLog('MEDIA', 'Received remote audio track from Resident', { streamId: event.streams[0]?.id });
                 const remoteAudio = document.getElementById('remoteAudio');
                 if (remoteAudio) {
                     remoteAudio.srcObject = event.streams[0];
-                    remoteAudio.play().catch(err => console.warn("Autoplay blocked:", err));
+                    remoteAudio.play().catch(err => addVisitorDebugLog('WARN', 'Autoplay blocked: ' + err.message));
                 }
             };
 
             peerConnection.onicecandidate = (event) => {
                 if (event.candidate) {
+                    addVisitorDebugLog('ICE', 'Generated local ICE candidate', { protocol: event.candidate.protocol, snippet: event.candidate.candidate.substring(0, 50) });
                     sendCallSignal(`ice:${encodeSignal(JSON.stringify(event.candidate))}`);
+                } else {
+                    addVisitorDebugLog('ICE', 'Local ICE candidate gathering complete');
                 }
             };
 
             peerConnection.onconnectionstatechange = () => {
-                console.log("Visitor connection state:", peerConnection.connectionState);
                 const state = peerConnection.connectionState;
+                addVisitorDebugLog('RTC STATE', `connectionState -> ${state}`);
                 if (state === 'connected') {
                     stopRingtone();
                     setReconnectingUI(false);
                     startCallTimer();
                 } else if (state === 'connecting' || state === 'disconnected') {
-                    if (callSeconds > 0) {
-                        setReconnectingUI(true);
-                    }
+                    if (callSeconds > 0) setReconnectingUI(true);
                 } else if (state === 'failed' || state === 'closed') {
                     cleanupCall();
                 }
             };
 
             peerConnection.oniceconnectionstatechange = () => {
-                console.log("Visitor ICE state:", peerConnection.iceConnectionState);
                 const iceState = peerConnection.iceConnectionState;
+                addVisitorDebugLog('RTC STATE', `iceConnectionState -> ${iceState}`);
                 if (iceState === 'connected' || iceState === 'completed') {
                     stopRingtone();
                     setReconnectingUI(false);
                     startCallTimer();
                 } else if (iceState === 'disconnected' || iceState === 'checking') {
-                    if (callSeconds > 0) {
-                        setReconnectingUI(true);
-                    }
+                    if (callSeconds > 0) setReconnectingUI(true);
                 } else if (iceState === 'failed') {
                     cleanupCall();
                 }
             };
 
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(offerSdp));
+            peerConnection.onsignalingstatechange = () => {
+                addVisitorDebugLog('RTC STATE', `signalingState -> ${peerConnection.signalingState}`);
+            };
 
-            while (iceCandidatesQueue.length > 0) {
-                const cand = iceCandidatesQueue.shift();
-                if (cand) {
-                    await peerConnection.addIceCandidate(new RTCIceCandidate(cand)).catch(e => console.error("Queued ICE error:", e));
+            try {
+                addVisitorDebugLog('SIGNAL IN', 'Setting Remote Description (Offer)...', { type: offerSdp.type });
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(offerSdp));
+
+                addVisitorDebugLog('ICE', `Flushing queued ICE candidates (${iceCandidatesQueue.length})...`);
+                while (iceCandidatesQueue.length > 0) {
+                    const cand = iceCandidatesQueue.shift();
+                    if (cand) {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(cand)).catch(e => addVisitorDebugLog('ERROR', 'Queued ICE error: ' + e.message));
+                    }
                 }
-            }
 
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-            sendCallSignal(`answer:${encodeSignal(JSON.stringify(answer))}`);
-            document.getElementById('callStatusText').innerText = "Connecting...";
+                addVisitorDebugLog('SIGNAL OUT', 'Creating SDP Answer...');
+                const answer = await peerConnection.createAnswer();
+                addVisitorDebugLog('SIGNAL OUT', 'Setting Local Description (Answer)...', { type: answer.type });
+                await peerConnection.setLocalDescription(answer);
+                addVisitorDebugLog('SIGNAL OUT', 'Sending Answer signal to Resident...');
+                sendCallSignal(`answer:${encodeSignal(JSON.stringify(answer))}`);
+                document.getElementById('callStatusText').innerText = "Connecting...";
+            } catch (e) {
+                addVisitorDebugLog('ERROR', 'Error setting offer or creating answer: ' + e.message, e);
+            }
         }
 
         async function sendCallSignal(signalText) {
             const now = Date.now();
+            const signalCommand = signalText.substring(0, signalText.indexOf(':') > -1 ? signalText.indexOf(':') : signalText.length);
             try {
                 const topicHash = md5(token || 'safedoor_default_topic_hash_key_1029');
                 const ntfyTopic = `safedoor_bell_${topicHash}`;
@@ -1514,12 +1670,16 @@
                     timestamp: now
                 };
 
-                await fetch(`https://ntfy.sh/${ntfyTopic}`, {
+                addVisitorDebugLog('SIGNAL OUT', `Sending signal '${signalCommand}' to topic '${ntfyTopic}'`, { payloadLength: signalText.length, sender: "Visitor" });
+
+                const response = await fetch(`https://ntfy.sh/${ntfyTopic}`, {
                     method: 'POST',
                     body: JSON.stringify(payload)
                 });
-                console.log("Visitor sent call signal:", signalText);
+
+                addVisitorDebugLog('SIGNAL OUT', `Signal '${signalCommand}' POST response status: ${response.status}`, { ok: response.ok });
             } catch (e) {
+                addVisitorDebugLog('ERROR', `Error sending signal '${signalCommand}': ${e.message}`, e);
                 console.error("Error sending signaling message from Visitor:", e);
             }
         }
@@ -1532,14 +1692,15 @@
             const command = firstColonIndex !== -1 ? signalData.substring(0, firstColonIndex) : signalData;
             const payloadStr = firstColonIndex !== -1 ? signalData.substring(firstColonIndex + 1) : "";
             
-            console.log("Visitor received signal:", command);
+            addVisitorDebugLog('SIGNAL IN', `Received signal command '${command}' from Resident (${sender})`);
 
             if (command === "initiate") {
                 if (payloadStr) {
                     try {
                         pendingOffer = JSON.parse(decodeSignal(payloadStr));
+                        addVisitorDebugLog('SIGNAL IN', 'Parsed Resident offer SDP', { type: pendingOffer.type });
                     } catch(e) {
-                        console.error("Error parsing offer SDP:", e);
+                        addVisitorDebugLog('ERROR', "Error parsing offer SDP: " + e.message, e);
                     }
                 }
                 showCallOverlay(false);
@@ -1548,17 +1709,20 @@
                 if (payloadStr && peerConnection) {
                     try {
                         const answerSdp = JSON.parse(decodeSignal(payloadStr));
+                        addVisitorDebugLog('SIGNAL IN', 'Setting Remote Description (Answer)...', { type: answerSdp.type });
                         await peerConnection.setRemoteDescription(new RTCSessionDescription(answerSdp));
+                        
+                        addVisitorDebugLog('ICE', `Flushing queued ICE candidates (${iceCandidatesQueue.length})...`);
                         while (iceCandidatesQueue.length > 0) {
                             const cand = iceCandidatesQueue.shift();
                             if (cand) {
-                                await peerConnection.addIceCandidate(new RTCIceCandidate(cand)).catch(e => console.error("Queued ICE error:", e));
+                                await peerConnection.addIceCandidate(new RTCIceCandidate(cand)).catch(e => addVisitorDebugLog('ERROR', 'Queued ICE error: ' + e.message));
                             }
                         }
                         stopRingtone();
                         document.getElementById('callStatusText').innerText = "Connecting...";
                     } catch(e) {
-                        console.error("Error setting answer SDP:", e);
+                        addVisitorDebugLog('ERROR', "Error setting answer SDP: " + e.message, e);
                     }
                 }
             } else if (command === "ice") {
@@ -1566,19 +1730,23 @@
                     try {
                         const candidate = JSON.parse(decodeSignal(payloadStr));
                         if (peerConnection && peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
-                            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.warn("ICE candidate error:", e));
+                            addVisitorDebugLog('ICE', 'Adding remote ICE candidate...');
+                            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => addVisitorDebugLog('WARN', "ICE candidate error: " + e.message));
                         } else {
+                            addVisitorDebugLog('ICE', 'Queued remote ICE candidate (remote description pending)');
                             iceCandidatesQueue.push(candidate);
                         }
                     } catch(e) {
-                        console.error("Error parsing ICE candidate:", e);
+                        addVisitorDebugLog('ERROR', "Error parsing ICE candidate: " + e.message, e);
                     }
                 }
             } else if (command === "decline") {
+                addVisitorDebugLog('SIGNAL IN', 'Resident declined call');
                 stopRingtone();
                 alert("Resident declined the call.");
                 cleanupCall();
             } else if (command === "hangup") {
+                addVisitorDebugLog('SIGNAL IN', 'Resident hung up call');
                 cleanupCall();
             }
         }
