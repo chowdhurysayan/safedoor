@@ -238,55 +238,66 @@
         const queryPurpose = urlParams.get('purpose') || '';
         const queryMessage = urlParams.get('message') || '';
 
-        // Initialize display label
-        document.addEventListener('DOMContentLoaded', () => {
+        // Initialize display labels and listeners
+        function initPage() {
             initNotificationSystem();
-            // Setup default purpose button visual state
             selectPurpose('Parcel', 'Parcel Courier');
 
-            // Check if we are already in success state
-            if (registerVisitor === 'true' && queryVisitorName) {
-                const currentTimestamp = parseInt(urlParams.get('timestamp')) || Date.now();
-                showSuccess(queryVisitorName, queryPurpose, queryMessage);
-                startChatListener(md5(token || 'safedoor_default_topic_hash_key_1029'), currentTimestamp);
-            }
+            let displayOwnerName = "";
+            let displayDoorId = "";
 
-            // Attempt basic decoding of token metadata if available
             try {
-                const queryOwnerName = urlParams.get('ownerName');
-                const queryDoorId = urlParams.get('doorId');
+                let rawOwnerName = urlParams.get('ownerName');
+                let rawDoorId = urlParams.get('doorId');
 
-                if (queryOwnerName || queryDoorId) {
-                    if (queryDoorId) document.getElementById('doorIdLabel').innerText = queryDoorId;
-                    if (queryOwnerName) document.getElementById('ownerNameLabel').innerText = queryOwnerName;
-                } else if (token) {
-                    // Quick Base64 decode to find readable strings if possible (fallback)
-                    let decodedToken = '';
-                    try {
-                        const base64 = token.replace(/-/g, '+').replace(/_/g, '/');
-                        decodedToken = atob(base64);
-                    } catch (e) {
-                        // Might be raw encrypted, so we show placeholder
-                    }
+                if (rawOwnerName) {
+                    try { displayOwnerName = decodeURIComponent(rawOwnerName); } catch(e) { displayOwnerName = rawOwnerName; }
+                }
+                if (rawDoorId) {
+                    try { displayDoorId = decodeURIComponent(rawDoorId); } catch(e) { displayDoorId = rawDoorId; }
+                }
 
-                    // Look for JSON-like strings
-                    if (decodedToken && decodedToken.includes('doorId')) {
-                        const parsed = JSON.parse(decodedToken);
-                        document.getElementById('doorIdLabel').innerText = parsed.doorId || "Front Door";
-                        document.getElementById('ownerNameLabel').innerText = parsed.ownerName || "Resident";
-                    } else {
-                        // Extract doorId from token if it was plain-text or parsed
-                        document.getElementById('doorIdLabel').innerText = "Door (Verified)";
-                        document.getElementById('ownerNameLabel').innerText = "SafeDoor Resident";
+                if (!displayOwnerName || !displayDoorId) {
+                    if (token) {
+                        let decodedToken = '';
+                        try {
+                            const base64 = token.replace(/-/g, '+').replace(/_/g, '/');
+                            decodedToken = atob(base64);
+                        } catch (e) {}
+
+                        if (decodedToken && decodedToken.includes('doorId')) {
+                            try {
+                                const parsed = JSON.parse(decodedToken);
+                                if (!displayDoorId) displayDoorId = parsed.doorId;
+                                if (!displayOwnerName) displayOwnerName = parsed.ownerName;
+                            } catch(e) {}
+                        }
                     }
-                } else {
-                    document.getElementById('doorIdLabel').innerText = "Doorbell #1";
-                    document.getElementById('ownerNameLabel').innerText = "SafeDoor User";
                 }
             } catch (e) {
                 console.error("Token preview error", e);
-                document.getElementById('doorIdLabel').innerText = "Doorbell Portal";
-                document.getElementById('ownerNameLabel').innerText = "Verified Resident";
+            }
+
+            const doorElem = document.getElementById('doorIdLabel');
+            const ownerElem = document.getElementById('ownerNameLabel');
+
+            if (doorElem) {
+                doorElem.innerText = displayDoorId || "Front Door (Verified)";
+            }
+            if (ownerElem) {
+                ownerElem.innerText = displayOwnerName || "SafeDoor Resident";
+            }
+
+            const topicHash = md5(token || 'safedoor_default_topic_hash_key_1029');
+            const currentTimestamp = parseInt(urlParams.get('timestamp')) || Date.now();
+
+            // Check if we are already in success state after registering visitor
+            if (registerVisitor === 'true' && queryVisitorName) {
+                showSuccess(queryVisitorName, queryPurpose, queryMessage);
+                startChatListener(topicHash, currentTimestamp);
+            } else if (token) {
+                // Subscribe immediately to live chat/signaling stream in background
+                startChatListener(topicHash, currentTimestamp);
             }
 
             // Keyboard-friendly inputs scrolling
@@ -295,10 +306,16 @@
                 input.addEventListener('focus', function() {
                     setTimeout(() => {
                         this.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    }, 350); // Small delay to let virtual keyboard pop up and adjust viewport
+                    }, 350);
                 });
             });
-        });
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initPage);
+        } else {
+            initPage();
+        }
 
         let capturedPhotoBase64 = null;
 
@@ -453,9 +470,12 @@
                 console.error("Optional remote bridge error", e);
             }
 
+            const ownerParam = urlParams.get('ownerName') || document.getElementById('ownerNameLabel')?.innerText || '';
+            const doorParam = urlParams.get('doorId') || document.getElementById('doorIdLabel')?.innerText || '';
+
             // Redirect user to the deep link so that if the Android app is running or installed,
             // it will capture the intent and automatically register the visitor!
-            const targetUrl = `${window.location.origin}${window.location.pathname}?token=${encodeURIComponent(token)}&registerVisitor=true&visitorName=${encodeURIComponent(visitorName)}&purpose=${encodeURIComponent(selectedPurpose)}&message=${encodeURIComponent(message)}&timestamp=${now}&visitorPhoto=${encodeURIComponent(capturedPhotoBase64 || '')}`;
+            const targetUrl = `${window.location.origin}${window.location.pathname}?token=${encodeURIComponent(token)}&ownerName=${encodeURIComponent(ownerParam)}&doorId=${encodeURIComponent(doorParam)}&registerVisitor=true&visitorName=${encodeURIComponent(visitorName)}&purpose=${encodeURIComponent(selectedPurpose)}&message=${encodeURIComponent(message)}&timestamp=${now}&visitorPhoto=${encodeURIComponent(capturedPhotoBase64 || '')}`;
             
             // Redirect or show success
             window.location.href = targetUrl;
@@ -599,16 +619,21 @@
                 eventSource.close();
             }
 
+            addVisitorDebugLog('SIGNAL IN', `Subscribing to SSE channel: ${ntfyTopic}`, { currentVisitorTimestamp });
             console.log("Subscribing to live chat on SSE: " + ntfyTopic);
             eventSource = new EventSource(`https://ntfy.sh/${ntfyTopic}/sse?since=5m`);
             
+            eventSource.onopen = () => {
+                addVisitorDebugLog('SIGNAL IN', `SSE connection established on channel: ${ntfyTopic}`);
+            };
+
             eventSource.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
                     if (data.event === "message") {
                         const payload = JSON.parse(data.message);
-                        const msgVisitorTs = Number(payload.visitorTimestamp);
-                        const currentVisitorTs = Number(visitorTimestamp);
+                        const msgVisitorTs = Number(payload.visitorTimestamp || 0);
+                        const currentVisitorTs = Number(visitorTimestamp || 0);
                         
                         // Handle visitor arrival alert if payload contains visitor registration details
                         if (payload.visitorName && payload.purpose) {
@@ -620,6 +645,7 @@
 
                         if (payload.type === "chat_message") {
                             if (payload.message && payload.message.startsWith("_webrtc_call_:")) {
+                                addVisitorDebugLog('SIGNAL IN', `Received WebRTC call signal from ${payload.sender || 'Resident'}`, { signalSnippet: payload.message.substring(0, 40) + '...' });
                                 if (payload.message.includes("initiate:") || payload.message.includes("offer:")) {
                                     triggerBrowserNotification("📞 SafeDoor Audio Call Request", {
                                         body: `${payload.sender || "Resident"} is starting a voice call!`,
@@ -630,28 +656,33 @@
                                 return;
                             }
 
-                            if (msgVisitorTs === currentVisitorTs || Math.abs(msgVisitorTs - currentVisitorTs) < 3000) {
+                            addVisitorDebugLog('SIGNAL IN', `Received chat message from ${payload.sender || 'Resident'}: "${payload.message}"`);
 
-                            // Trigger push notification for incoming chat message
-                            triggerBrowserNotification(`💬 Message from ${payload.sender}`, {
-                                body: payload.message,
-                                tag: "chat-msg"
-                            });
+                            const isMatch = !currentVisitorTs || !msgVisitorTs || payload.sender === "Owner" || msgVisitorTs === currentVisitorTs || Math.abs(msgVisitorTs - currentVisitorTs) < 86400000;
 
-                            // Ensure chat section is shown!
-                            const chatSection = document.getElementById('chatSection');
-                            if (chatSection) {
-                                chatSection.classList.remove('hidden');
+                            if (isMatch) {
+                                // Trigger push notification for incoming chat message
+                                triggerBrowserNotification(`💬 Message from ${payload.sender}`, {
+                                    body: payload.message,
+                                    tag: "chat-msg"
+                                });
+
+                                // Ensure chat section is shown!
+                                const chatSection = document.getElementById('chatSection');
+                                if (chatSection) {
+                                    chatSection.classList.remove('hidden');
+                                }
+                                chatInitialized = true;
+                                
+                                // Hide typing indicator immediately when a real message arrives
+                                showTypingIndicator(false);
+
+                                // Append message to history
+                                appendMessageToHistory(payload.sender, payload.message, payload.timestamp);
                             }
-                            chatInitialized = true;
-                            
-                            // Hide typing indicator immediately when a real message arrives
-                            showTypingIndicator(false);
-
-                            // Append message to history
-                            appendMessageToHistory(payload.sender, payload.message, payload.timestamp);
-                        } else if (payload.type === "typing" && (msgVisitorTs === currentVisitorTs || Math.abs(msgVisitorTs - currentVisitorTs) < 3000)) {
-                            if (payload.sender === "Owner") {
+                        } else if (payload.type === "typing") {
+                            const isMatch = !currentVisitorTs || !msgVisitorTs || payload.sender === "Owner" || msgVisitorTs === currentVisitorTs || Math.abs(msgVisitorTs - currentVisitorTs) < 86400000;
+                            if (isMatch && payload.sender === "Owner") {
                                 showTypingIndicator(payload.isTyping);
                             }
                         }
@@ -662,6 +693,7 @@
             };
 
             eventSource.onerror = (e) => {
+                addVisitorDebugLog('WARN', `SSE connection interrupted or reconnecting on channel: ${ntfyTopic}`);
                 console.error("SSE connection error, retrying...", e);
             };
         }
