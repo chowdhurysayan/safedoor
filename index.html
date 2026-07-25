@@ -621,7 +621,7 @@
 
             addVisitorDebugLog('SIGNAL IN', `Subscribing to SSE channel: ${ntfyTopic}`, { currentVisitorTimestamp });
             console.log("Subscribing to live chat on SSE: " + ntfyTopic);
-            eventSource = new EventSource(`https://ntfy.sh/${ntfyTopic}/sse?since=5m`);
+            eventSource = new EventSource(`https://ntfy.sh/${ntfyTopic}/sse?since=10s`);
             
             eventSource.onopen = () => {
                 addVisitorDebugLog('SIGNAL IN', `SSE connection established on channel: ${ntfyTopic}`);
@@ -645,6 +645,12 @@
 
                         if (payload.type === "chat_message") {
                             if (payload.message && payload.message.startsWith("_webrtc_call_:")) {
+                                const msgTimestamp = Number(payload.timestamp) || (data.time ? data.time * 1000 : 0);
+                                if (msgTimestamp > 0 && msgTimestamp < visitorSessionStartTime) {
+                                    addVisitorDebugLog('SIGNAL IN', `Ignoring stale replayed WebRTC signal (${payload.message.substring(0, 30)}...)`, { msgTimestamp, visitorSessionStartTime });
+                                    return;
+                                }
+
                                 addVisitorDebugLog('SIGNAL IN', `Received WebRTC call signal from ${payload.sender || 'Resident'}`, { signalSnippet: payload.message.substring(0, 40) + '...' });
                                 if (payload.message.includes("initiate:") || payload.message.includes("offer:")) {
                                     triggerBrowserNotification("📞 SafeDoor Audio Call Request", {
@@ -1083,7 +1089,7 @@
         </div>
     </div>
     
-    <audio id="remoteAudio" autoplay></audio>
+    <audio id="remoteAudio" autoplay playsinline style="display:none;"></audio>
 
     <!-- WebRTC audio call javascript -->
     <script>
@@ -1188,6 +1194,8 @@
         let isMuted = false;
         let iceCandidatesQueue = [];
 
+        const visitorSessionStartTime = Date.now() - 5000;
+
         const rtcConfig = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
@@ -1196,7 +1204,22 @@
                 { urls: 'stun:stun3.l.google.com:19302' },
                 { urls: 'stun:stun4.l.google.com:19302' },
                 { urls: 'stun:global.stun.twilio.com:3478' },
-                { urls: 'stun:stun.services.mozilla.com' }
+                { urls: 'stun:stun.services.mozilla.com' },
+                {
+                    urls: 'turn:openrelay.metered.ca:80',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turns:openrelay.metered.ca:443?transport=tcp',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                }
             ]
         };
 
@@ -1534,11 +1557,14 @@
             });
 
             peerConnection.ontrack = (event) => {
-                addVisitorDebugLog('MEDIA', 'Received remote audio track from Resident', { streamId: event.streams[0]?.id });
+                addVisitorDebugLog('MEDIA', 'Received remote audio track from Resident', { streamId: event.streams[0]?.id, trackKind: event.track?.kind });
                 const remoteAudio = document.getElementById('remoteAudio');
                 if (remoteAudio) {
-                    remoteAudio.srcObject = event.streams[0];
-                    remoteAudio.play().catch(err => addVisitorDebugLog('WARN', 'Autoplay blocked: ' + err.message));
+                    const stream = (event.streams && event.streams[0]) ? event.streams[0] : new MediaStream([event.track]);
+                    remoteAudio.srcObject = stream;
+                    remoteAudio.play().then(() => {
+                        addVisitorDebugLog('MEDIA', 'Remote audio playing successfully!');
+                    }).catch(err => addVisitorDebugLog('WARN', 'Autoplay blocked: ' + err.message));
                 }
             };
 
@@ -1614,11 +1640,14 @@
             localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
             peerConnection.ontrack = (event) => {
-                addVisitorDebugLog('MEDIA', 'Received remote audio track from Resident', { streamId: event.streams[0]?.id });
+                addVisitorDebugLog('MEDIA', 'Received remote audio track from Resident', { streamId: event.streams[0]?.id, trackKind: event.track?.kind });
                 const remoteAudio = document.getElementById('remoteAudio');
                 if (remoteAudio) {
-                    remoteAudio.srcObject = event.streams[0];
-                    remoteAudio.play().catch(err => addVisitorDebugLog('WARN', 'Autoplay blocked: ' + err.message));
+                    const stream = (event.streams && event.streams[0]) ? event.streams[0] : new MediaStream([event.track]);
+                    remoteAudio.srcObject = stream;
+                    remoteAudio.play().then(() => {
+                        addVisitorDebugLog('MEDIA', 'Remote audio playing successfully!');
+                    }).catch(err => addVisitorDebugLog('WARN', 'Autoplay blocked: ' + err.message));
                 }
             };
 

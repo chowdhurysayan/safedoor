@@ -121,7 +121,7 @@
         </button>
     </div>
 
-    <audio id="remoteAudio" autoplay></audio>
+    <audio id="remoteAudio" autoplay playsinline style="display:none;"></audio>
 
     <!-- Live WebRTC & Signaling Debugger Console -->
     <div id="callDebuggerContainer" class="w-full max-w-xs sm:max-w-sm mx-auto mt-2 mb-6 bg-slate-950/95 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl text-left">
@@ -273,6 +273,8 @@
         let isMuted = false;
         let iceCandidatesQueue = [];
 
+        const callSessionStartTime = Date.now() - 5000;
+
         const rtcConfig = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
@@ -281,7 +283,22 @@
                 { urls: 'stun:stun3.l.google.com:19302' },
                 { urls: 'stun:stun4.l.google.com:19302' },
                 { urls: 'stun:global.stun.twilio.com:3478' },
-                { urls: 'stun:stun.services.mozilla.com' }
+                { urls: 'stun:stun.services.mozilla.com' },
+                {
+                    urls: 'turn:openrelay.metered.ca:80',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turns:openrelay.metered.ca:443?transport=tcp',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                }
             ]
         };
 
@@ -796,11 +813,14 @@
             });
 
             peerConnection.ontrack = (event) => {
-                addDebugLog('MEDIA', 'Received remote audio track from Visitor', { streamId: event.streams[0]?.id });
+                addDebugLog('MEDIA', 'Received remote audio track from Visitor', { streamId: event.streams[0]?.id, trackKind: event.track?.kind });
                 const remoteAudio = document.getElementById('remoteAudio');
                 if (remoteAudio) {
-                    remoteAudio.srcObject = event.streams[0];
-                    remoteAudio.play().catch(err => addDebugLog('WARN', 'Autoplay blocked: ' + err.message));
+                    const stream = (event.streams && event.streams[0]) ? event.streams[0] : new MediaStream([event.track]);
+                    remoteAudio.srcObject = stream;
+                    remoteAudio.play().then(() => {
+                        addDebugLog('MEDIA', 'Remote audio playing successfully!');
+                    }).catch(err => addDebugLog('WARN', 'Autoplay blocked: ' + err.message));
                 }
             };
 
@@ -874,11 +894,14 @@
             localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
             peerConnection.ontrack = (event) => {
-                addDebugLog('MEDIA', 'Received remote audio track from Visitor', { streamId: event.streams[0]?.id });
+                addDebugLog('MEDIA', 'Received remote audio track from Visitor', { streamId: event.streams[0]?.id, trackKind: event.track?.kind });
                 const remoteAudio = document.getElementById('remoteAudio');
                 if (remoteAudio) {
-                    remoteAudio.srcObject = event.streams[0];
-                    remoteAudio.play().catch(err => addDebugLog('WARN', 'Autoplay blocked: ' + err.message));
+                    const stream = (event.streams && event.streams[0]) ? event.streams[0] : new MediaStream([event.track]);
+                    remoteAudio.srcObject = stream;
+                    remoteAudio.play().then(() => {
+                        addDebugLog('MEDIA', 'Remote audio playing successfully!');
+                    }).catch(err => addDebugLog('WARN', 'Autoplay blocked: ' + err.message));
                 }
             };
 
@@ -947,7 +970,7 @@
 
         function setupSseListener() {
             addDebugLog('INIT', 'Subscribing to ntfy signaling stream...', { ntfyTopic });
-            eventSource = new EventSource(`https://ntfy.sh/${ntfyTopic}/sse?since=5m`);
+            eventSource = new EventSource(`https://ntfy.sh/${ntfyTopic}/sse?since=10s`);
 
             eventSource.onopen = () => {
                 addDebugLog('SIGNAL IN', 'SSE channel connected');
@@ -965,6 +988,12 @@
                         if (payload.type === "chat_message" && payload.sender === "Visitor") {
                             const message = payload.message;
                             if (message && message.startsWith("_webrtc_call_:")) {
+                                const msgTimestamp = Number(payload.timestamp) || (data.time ? data.time * 1000 : 0);
+                                if (msgTimestamp > 0 && msgTimestamp < callSessionStartTime) {
+                                    addDebugLog('SIGNAL IN', `Ignoring stale replayed WebRTC signal (${message.substring(0, 30)}...)`, { msgTimestamp, callSessionStartTime });
+                                    return;
+                                }
+
                                 const signalData = message.substring("_webrtc_call_:".length);
                                 const firstColonIndex = signalData.indexOf(":");
                                 const command = firstColonIndex !== -1 ? signalData.substring(0, firstColonIndex) : signalData;
